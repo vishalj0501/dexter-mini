@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dexter
+      POSTGRES_PASSWORD: dexter
+      POSTGRES_DB: dexter
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dexter -d dexter"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  gateway:
+    build: ./apps/gateway
+    environment:
+      DATABASE_URL: postgres://dexter:dexter@db:5432/dexter
+      LOG_LEVEL: INFO
+      AUTO_SEED: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./apps/gateway:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  dbdata:
