@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from tortoise import Tortoise
+from tortoise.contrib.fastapi import RegisterTortoise
 
 from app.config import settings
 from app.db import TORTOISE_CONFIG
@@ -16,16 +16,17 @@ log = logging.getLogger("dexter-mini")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("startup: initialising Tortoise ORM")
-    await Tortoise.init(config=TORTOISE_CONFIG)
-    await Tortoise.generate_schemas(safe=True)
-    if settings.AUTO_SEED:
-        await seed_if_empty()
-    log.info("startup: ready")
-    try:
+    async with RegisterTortoise(
+        app=app,
+        config=TORTOISE_CONFIG,
+        generate_schemas=True,
+        add_exception_handlers=False,
+    ):
+        if settings.AUTO_SEED:
+            await seed_if_empty()
+        log.info("startup: ready")
         yield
-    finally:
         log.info("shutdown: closing DB connections")
-        await Tortoise.close_connections()
 
 
 app = FastAPI(title="dexter-mini gateway", version="0.1.0", lifespan=lifespan)

@@ -1,9 +1,12 @@
+import logging
+
 from fastapi import APIRouter
 from tortoise import Tortoise
 
 from app.models import Resident
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 @router.get("/health")
@@ -16,7 +19,7 @@ async def health() -> dict:
         db_ok = True
         resident_count = await Resident.all().count()
     except Exception:
-        pass
+        log.exception("health: database check failed")
     return {
         "status": "ok" if db_ok else "degraded",
         "db": "ok" if db_ok else "down",
