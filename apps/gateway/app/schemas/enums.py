@@ -43,10 +43,29 @@ class FlagSeverity(str, Enum):
 
 
 class AuditAction(str, Enum):
-    TOOL_CALL = "tool_call"
+
     LLM_CALL = "llm_call"
-    DB_WRITE = "db_write"
-    FINALIZE = "finalize"
-    FLAG = "flag"
-    ASK_HUMAN = "ask_human"
     LOGIN = "login"
+
+
+    GET_RESIDENT = "tool.get_resident"
+    GET_RECENT_NOTES = "tool.get_recent_notes"
+    SEARCH_CARE_PLAN = "tool.search_care_plan"
+    CHECK_VITAL_RANGES = "tool.check_vital_ranges"
+
+    DRAFT_SIS_ENTRY = "tool.draft_sis_entry"
+    VALIDATE_ENTRY = "tool.validate_entry"
+    SYNTHESIZE_SUMMARY = "tool.synthesize_summary"
+    REDACT_PII = "tool.redact_pii"
+
+    ASK_CAREGIVER = "tool.ask_caregiver"
+    FLAG_FOR_REVIEW = "tool.flag_for_review"
+    SCHEDULE_FOLLOWUP = "tool.schedule_followup"
+    FINALIZE_ENTRY = "tool.finalize_entry"
+    LIST_PENDING_DOCUMENTATION = "tool.list_pending_documentation"
+
+
+class FollowupStatus(str, Enum):
+    OPEN = "open"
+    DONE = "done"
+    CANCELLED = "cancelled"

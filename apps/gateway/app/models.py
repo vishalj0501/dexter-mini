@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 from tortoise import fields, models
 
-from app.schemas.enums import AuditAction, EventStatus, FlagSeverity, Theme
+from app.schemas.enums import AuditAction, EventStatus, FlagSeverity, FollowupStatus, Theme
 
 
 def _utcnow() -> datetime:
@@ -24,6 +24,7 @@ class Resident(models.Model):
     care_plan: fields.ReverseRelation["CarePlan"]
     care_events: fields.ReverseRelation["CareEvent"]
     review_flags: fields.ReverseRelation["ReviewFlag"]
+    followups: fields.ReverseRelation["Followup"]
 
     class Meta:
         table = "residents"
@@ -93,6 +94,24 @@ class ReviewFlag(models.Model):
         indexes = [("resident_id", "resolved")]
 
 
+class Followup(models.Model):
+    id = fields.UUIDField(pk=True)
+    resident: fields.ForeignKeyRelation = fields.ForeignKeyField(
+        "models.Resident", related_name="followups", on_delete=fields.CASCADE
+    )
+    action = fields.TextField()
+    due_at = fields.DatetimeField()
+    status = fields.CharEnumField(FollowupStatus, default=FollowupStatus.OPEN, max_length=16)
+    raised_by = fields.CharField(max_length=128, default="agent")
+    request_id = fields.CharField(max_length=64, null=True)
+    completed_at = fields.DatetimeField(null=True)
+    created_at = fields.DatetimeField(auto_now_add=True)
+
+    class Meta:
+        table = "followups"
+        indexes = [("resident_id", "status"), ("due_at",)]
+
+
 class AuditLog(models.Model):
     id = fields.UUIDField(pk=True)
     request_id = fields.CharField(max_length=64, index=True)
@@ -139,6 +158,7 @@ __all__ = [
     "CareEvent",
     "CarePlan",
     "EvalRun",
+    "Followup",
     "Resident",
     "ReviewFlag",
 ]
