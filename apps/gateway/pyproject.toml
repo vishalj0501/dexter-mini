@@ -9,6 +9,8 @@ dependencies = [
     "tortoise-orm[asyncpg]>=0.21",
     "pydantic>=2.9",
     "pydantic-settings>=2.5",
+    "litellm>=1.52",
+    "instructor>=1.6",
 ]
 
 [dependency-groups]

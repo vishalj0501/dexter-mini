@@ -17,10 +17,14 @@ services:
 
   gateway:
     build: ./apps/gateway
+    # DATABASE_URL must point at the `db` service hostname inside the docker
+    # network; everything else flows in from .env (only vars actually set
+    # are propagated, so Python-side defaults still apply for anything omitted).
     environment:
       DATABASE_URL: postgres://dexter:dexter@db:5432/dexter
-      LOG_LEVEL: INFO
-      AUTO_SEED: "true"
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "8000:8000"
     depends_on:
