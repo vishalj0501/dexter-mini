@@ -21,6 +21,7 @@ from uuid import UUID
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.types import interrupt
 
 from app.schemas.enums import FlagSeverity, Theme
 from app.tools import drafting as _drafting
@@ -257,8 +258,16 @@ async def ask_caregiver(
     context: dict[str, Any] | None = None,
     config: RunnableConfig = None,
 ) -> dict:
-    """Surface a clarifying question to the caregiver. Use this WHENEVER the
-    ambiguity is clinically meaningful:
+    """Surface a clarifying question to the caregiver AND WAIT for their reply.
+
+    This tool PAUSES the agent. The graph stops executing here, the API
+    returns the question to the client, and the agent only continues after
+    the client calls /agent/resume with the caregiver's reply.
+
+    On resume you will receive the reply as the Observation — incorporate
+    it into your reasoning and continue.
+
+    Use this WHENEVER the ambiguity is clinically meaningful:
       - `get_resident` returned multiple candidates.
       - A required vital is missing AND yesterday's reading was elevated.
       - A field's value contradicts care-plan history.
@@ -270,10 +279,15 @@ async def ask_caregiver(
         context: Optional dict of relevant state to surface alongside the question.
     """
     request_id, actor = _ctx(config)
-    result = await _workflow.ask_caregiver(
+    # Record the ask in audit_log BEFORE pausing. The audited tool writes
+    # a row even though we won't return its PendingQuestion to the planner.
+    await _workflow.ask_caregiver(
         question, context=context, request_id=request_id, actor=actor,
     )
-    return result.model_dump(mode="json")
+    # Suspend the graph. On resume, `reply` becomes whatever the gateway
+    # passed via Command(resume=...). The planner sees it as the Observation.
+    reply = interrupt({"question": question, "context": context or {}})
+    return {"reply": reply, "question": question}
 
 
 @tool

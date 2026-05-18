@@ -30,6 +30,9 @@ from typing import Annotated, Any, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.graph.state import CompiledStateGraph
@@ -242,7 +245,11 @@ def _make_tools_node(tools: list[Any]):
                 # `config` carries request_id/actor through to the audited fn.
                 result = await tool.ainvoke(args, config=config)
                 observation = result if isinstance(result, (dict, list)) else {"result": result}
-            except Exception as exc:  # tool raised — surface to the model
+            except GraphBubbleUp:
+                # interrupt() and other LangGraph control-flow signals must
+                # bubble all the way up — they're not tool errors.
+                raise
+            except Exception as exc:  # genuine tool failure → feed to the model
                 log.warning("tool %s raised: %s", name, exc)
                 observation = {"error": type(exc).__name__, "message": str(exc)}
 
@@ -273,11 +280,23 @@ def _route_after_planner(state: AgentState) -> str:
 # ────────────────────────────────────────────────────────────────────────────
 
 
+# One process-wide checkpointer so interrupted runs survive between HTTP
+# requests in the same process. For multi-process / multi-replica deploys
+# this would be a PostgresSaver pointing at our same DB — but Day 4 ships
+# the in-memory version that's fine for the single-container demo.
+_default_checkpointer: BaseCheckpointSaver = MemorySaver()
+
+
+def get_default_checkpointer() -> BaseCheckpointSaver:
+    return _default_checkpointer
+
+
 def build_agent_graph(
     *,
     client: LLMClient | None = None,
     tools: list[Any] | None = None,
     system_prompt: str | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
     """Compile the ReAct graph. Overrides are for tests."""
     tool_list = tools if tools is not None else ALL_TOOLS
@@ -292,7 +311,7 @@ def build_agent_graph(
     g.add_conditional_edges("planner", _route_after_planner, ["tools", "planner", END])
     g.add_edge("tools", "planner")
 
-    return g.compile()
+    return g.compile(checkpointer=checkpointer or _default_checkpointer)
 
 
 @lru_cache(maxsize=1)

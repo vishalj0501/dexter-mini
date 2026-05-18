@@ -13,6 +13,8 @@ from uuid import uuid4
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.types import Command
 
 from app.agent.graph import build_agent_graph
 from app.agent.llm_tools import ALL_TOOLS, get_resident as get_resident_tool
@@ -179,32 +181,47 @@ class ScriptedClient:
         )
 
 
+def _graph_config(thread_id: str, request_id: str = REQUEST_ID, actor: str = "tester") -> dict:
+    return {
+        "configurable": {
+            "request_id": request_id,
+            "actor": actor,
+            "thread_id": thread_id,
+        },
+    }
+
+
+def _fresh_graph(client, tools=None):
+    return build_agent_graph(
+        client=client,
+        tools=tools if tools is not None else ALL_TOOLS,
+        checkpointer=MemorySaver(),
+    )
+
+
 async def test_graph_runs_get_resident_then_finishes(resident):
     """Two-step plan: resolve resident → declare done."""
     rid = str(resident.id)
     client = ScriptedClient([
-        # Turn 1: call get_resident.
         f"""\
 Thought: resolve the resident first.
 Action: get_resident
 Action Input: {{"name_or_id": "Müller"}}
 """,
-        # Turn 2: after observing the resolution, finish.
         """\
 Thought: I have the id; nothing else asked.
 Final Answer: Resolved Frau Müller (room 12). No documentation requested.
 """,
     ])
-    graph = build_agent_graph(client=client, tools=ALL_TOOLS)
+    graph = _fresh_graph(client)
     state = await graph.ainvoke(
         {"messages": [HumanMessage("who is Müller in room 12?")]},
-        config={"configurable": {"request_id": "graph-test-1", "actor": "tester"}},
+        config=_graph_config("t-1", request_id="graph-test-1"),
     )
 
     assert state["done"] is True
     assert "Müller" in state["final_answer"]
 
-    # Audit-log row for the tool call exists, joinable by request_id.
     rows = await AuditLog.filter(request_id="graph-test-1").all()
     actions = {r.action for r in rows}
     assert "tool.get_resident" in actions
@@ -234,10 +251,10 @@ Thought: done.
 Final Answer: Drafted vitals (BP 130/82, HR 72) for Frau Müller.
 """,
     ])
-    graph = build_agent_graph(client=client, tools=ALL_TOOLS)
+    graph = _fresh_graph(client)
     await graph.ainvoke(
         {"messages": [HumanMessage("BP 130/82, pulse 72 for Frau Müller.")]},
-        config={"configurable": {"request_id": "graph-test-2", "actor": "tester"}},
+        config=_graph_config("t-2", request_id="graph-test-2"),
     )
 
     drafts = await CareEvent.filter(request_id="graph-test-2").all()
@@ -248,39 +265,119 @@ Final Answer: Drafted vitals (BP 130/82, HR 72) for Frau Müller.
 
 
 async def test_graph_recovers_from_parse_error(resident):
-    """If turn 1 is unparseable, the graph injects a repair prompt and loops.
-    Turn 2 should produce a valid Final Answer and finish."""
     client = ScriptedClient([
-        "I'll just chat about this for a bit.",  # No Action, no Final Answer
+        "I'll just chat about this for a bit.",
         "Thought: ok.\nFinal Answer: Recovered.",
     ])
-    graph = build_agent_graph(client=client, tools=ALL_TOOLS)
+    graph = _fresh_graph(client)
     state = await graph.ainvoke(
         {"messages": [HumanMessage("?")]},
-        config={"configurable": {"request_id": "graph-test-3", "actor": "tester"}},
-        # Allow extra recursion budget for the repair loop.
-        # (default in langgraph is 25, plenty here.)
+        config=_graph_config("t-3", request_id="graph-test-3"),
     )
     assert state["done"] is True
     assert "Recovered" in state["final_answer"]
-    # Two planner calls happened
     assert len(client.calls) == 2
 
 
 async def test_graph_handles_unknown_tool(resident):
-    """If the model picks a non-existent tool, the observation is an error JSON
-    and the next planner turn can pivot. Here we just verify the loop continues."""
     client = ScriptedClient([
         "Thought: oops\nAction: nonexistent_tool\nAction Input: {}",
         "Thought: that didn't work\nFinal Answer: Stopping.",
     ])
-    graph = build_agent_graph(client=client, tools=ALL_TOOLS)
+    graph = _fresh_graph(client)
     state = await graph.ainvoke(
         {"messages": [HumanMessage("?")]},
-        config={"configurable": {"request_id": "graph-test-4", "actor": "tester"}},
+        config=_graph_config("t-4", request_id="graph-test-4"),
     )
     assert state["done"] is True
-    # The observation for the bogus tool call should have been appended.
     msgs = state["messages"]
     observations = [m for m in msgs if isinstance(m, HumanMessage) and "Observation" in (m.content or "")]
     assert any("unknown_tool" in (m.content or "") for m in observations)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# interrupt() / resume — Day 4
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def test_ask_caregiver_interrupts_graph(resident, other_resident):
+    """Scripted: ambiguity-style scenario where the agent immediately asks.
+    The graph should pause with __interrupt__ set; no Final Answer yet."""
+    client = ScriptedClient([
+        """\
+Thought: two residents named Müller — disambiguate first.
+Action: ask_caregiver
+Action Input: {"question": "Which Müller — Margarethe (room 12) or Hans (room 14)?"}
+""",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("BP 128/78 for Müller.")]},
+        config=_graph_config("t-ask-1", request_id="graph-ask-1"),
+    )
+    interrupts = state.get("__interrupt__") or []
+    assert interrupts, "graph should have paused on ask_caregiver"
+    value = interrupts[0].value
+    assert "Margarethe" in value["question"] and "Hans" in value["question"]
+    # The graph is NOT done — it's awaiting reply.
+    assert state.get("done") is not True
+
+
+async def test_resume_continues_with_reply(resident, other_resident):
+    """Full pause/resume cycle. After interrupt, Command(resume=reply) should
+    feed the reply back as the tool's return value; planner sees it as
+    Observation and continues."""
+    client = ScriptedClient([
+        # Turn 1: pause for clarification
+        """\
+Thought: ambiguous — ask.
+Action: ask_caregiver
+Action Input: {"question": "Which Müller?"}
+""",
+        # Turn 2 (after resume): use the reply, finish.
+        """\
+Thought: caregiver said Margarethe. Done for now.
+Final Answer: Got it — Margarethe Müller (room 12).
+""",
+    ])
+    graph = _fresh_graph(client)
+    config = _graph_config("t-ask-2", request_id="graph-ask-2")
+
+    first = await graph.ainvoke(
+        {"messages": [HumanMessage("Just finished with Müller.")]},
+        config=config,
+    )
+    assert (first.get("__interrupt__") or []), "should pause first"
+
+    # Resume with the caregiver's reply.
+    final = await graph.ainvoke(Command(resume="Margarethe"), config=config)
+    assert final.get("done") is True
+    assert "Margarethe" in final["final_answer"]
+
+    # The observation appended by ask_caregiver's tool wrapper carries the reply.
+    obs_msgs = [
+        m for m in final["messages"]
+        if isinstance(m, HumanMessage) and "Observation" in (m.content or "")
+    ]
+    assert any("Margarethe" in (m.content or "") for m in obs_msgs)
+
+
+async def test_ask_caregiver_writes_audit_row_before_pausing(resident, other_resident):
+    """Even when the graph suspends, the audited workflow tool runs and
+    records the question. The audit row is the trace of 'we asked' even if
+    we haven't yet received the answer."""
+    client = ScriptedClient([
+        """\
+Thought: ambiguous.
+Action: ask_caregiver
+Action Input: {"question": "Which Müller?"}
+""",
+    ])
+    graph = _fresh_graph(client)
+    await graph.ainvoke(
+        {"messages": [HumanMessage("BP 128/78 for Müller.")]},
+        config=_graph_config("t-ask-3", request_id="graph-ask-3"),
+    )
+    rows = await AuditLog.filter(request_id="graph-ask-3", action="tool.ask_caregiver").all()
+    assert len(rows) == 1
+    assert "Which Müller" in rows[0].payload["input"]["question"]
