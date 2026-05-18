@@ -11,6 +11,12 @@ dependencies = [
     "pydantic-settings>=2.5",
     "litellm>=1.52",
     "instructor>=1.6",
+    "langchain-core>=0.3",
+    "langgraph>=0.2.50",
+    # LiteLLM's langfuse integration calls `langfuse.version.__version__`,
+    # which was removed in langfuse v3+. Pin to the 2.x line until LiteLLM
+    # ships a v3-compatible callback.
+    "langfuse>=2.50,<3.0",
 ]
 
 [dependency-groups]

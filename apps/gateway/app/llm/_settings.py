@@ -26,15 +26,15 @@ class LLMSettings(BaseSettings):
     )
 
     # Planner — picks the next tool. Wants reasoning quality; fallback cheaper.
-    planner: str = Field(default="replicate/anthropic/claude-sonnet-4-5")
+    planner: str = Field(default="replicate/anthropic/claude-4.5-sonnet")
     planner_fallback: str = Field(default="replicate/openai/gpt-4o-mini")
 
     # Extractor — fills the SIS Pydantic schemas. Wants the strongest model.
-    extractor: str = Field(default="replicate/anthropic/claude-sonnet-4-5")
+    extractor: str = Field(default="replicate/anthropic/claude-4.5-sonnet")
     extractor_fallback: str = Field(default="replicate/openai/gpt-4o")
 
     # Judge — grounds drafts against the transcript. Cheap + fast > big.
-    judge: str = Field(default="replicate/anthropic/claude-haiku-4-5")
+    judge: str = Field(default="replicate/anthropic/claude-4.5-haiku")
     judge_fallback: str = Field(default="replicate/openai/gpt-4o-mini")
 
     # Reliability knobs (apply uniformly across roles)
@@ -49,6 +49,23 @@ class LLMSettings(BaseSettings):
     # Deterministic by default — overridable per call.
     default_temperature: float = Field(default=0.0)
     default_max_tokens: int = Field(default=1024)
+
+
+class LangfuseSettings(BaseSettings):
+    """LangFuse credentials — picked up by LiteLLM's success callback.
+
+    Source of truth for whether LangFuse is enabled is the *presence* of
+    LANGFUSE_PUBLIC_KEY in env. If unset, the callback is skipped silently.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="LANGFUSE_", env_file=".env", extra="ignore")
+    public_key: str = Field(default="")
+    secret_key: str = Field(default="")
+    host: str = Field(default="https://cloud.langfuse.com")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.public_key and self.secret_key)
 
 
 Role = str  # one of {"planner", "extractor", "judge"}
@@ -68,3 +85,4 @@ def models_for(role: Role, settings: LLMSettings) -> list[str]:
 
 
 llm_settings = LLMSettings()
+langfuse_settings = LangfuseSettings()

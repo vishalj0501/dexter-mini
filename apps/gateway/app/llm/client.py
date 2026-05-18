@@ -28,7 +28,13 @@ from litellm import acompletion
 from litellm.exceptions import APIError
 from pydantic import BaseModel, Field
 
-from app.llm._settings import LLMSettings, Role, llm_settings, models_for
+from app.llm._settings import (
+    LLMSettings,
+    Role,
+    langfuse_settings,
+    llm_settings,
+    models_for,
+)
 from app.llm.reliability import CircuitBreaker, default_breaker
 from app.models import AuditLog
 from app.schemas.enums import AuditAction
@@ -37,6 +43,25 @@ log = logging.getLogger(__name__)
 
 
 litellm.suppress_debug_info = True
+
+
+def _enable_langfuse_callback_once() -> None:
+    """Wire LangFuse as a LiteLLM success/failure callback when env is set.
+
+    Idempotent — safe to call from multiple entry points.
+    """
+    if not langfuse_settings.enabled:
+        return
+    callbacks = set(litellm.success_callback or [])
+    if "langfuse" not in callbacks:
+        litellm.success_callback = list(callbacks | {"langfuse"})
+        log.info("llm: langfuse callback enabled (host=%s)", langfuse_settings.host)
+    fcallbacks = set(litellm.failure_callback or [])
+    if "langfuse" not in fcallbacks:
+        litellm.failure_callback = list(fcallbacks | {"langfuse"})
+
+
+_enable_langfuse_callback_once()
 
 
 class Message(BaseModel):
@@ -125,17 +150,18 @@ class LiteLLMClient:
             "has_tools": bool(tools),
             "structured": response_model.__name__ if response_model else None,
         }
+        metadata = self._langfuse_metadata(request_id, actor)
 
         try:
             if response_model is not None:
                 completion = await self._structured_call(
                     messages, model_list, response_model,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=max_tokens, metadata=metadata,
                 )
             else:
                 completion = await self._chat_call(
                     messages, model_list, tools=tools,
-                    temperature=temperature, max_tokens=max_tokens,
+                    temperature=temperature, max_tokens=max_tokens, metadata=metadata,
                 )
         except Exception as exc:
             self.breaker.record_failure(model_list[0])
@@ -174,6 +200,7 @@ class LiteLLMClient:
         tools: list[dict[str, Any]] | None,
         temperature: float | None,
         max_tokens: int | None,
+        metadata: dict[str, Any] | None,
     ) -> Completion:
         primary = model_list[0]
         fallbacks = model_list[1:]
@@ -186,6 +213,7 @@ class LiteLLMClient:
             temperature=temperature if temperature is not None else self.settings.default_temperature,
             max_tokens=max_tokens if max_tokens is not None else self.settings.default_max_tokens,
             tools=tools,
+            metadata=metadata,
         )
         return _to_completion(response, role=self.role)
 
@@ -197,6 +225,7 @@ class LiteLLMClient:
         *,
         temperature: float | None,
         max_tokens: int | None,
+        metadata: dict[str, Any] | None,
     ) -> Completion:
         """Structured output via Instructor — parse + retry-on-validation-failure."""
         import instructor  # local import keeps cold-start cheap when unused
@@ -214,10 +243,28 @@ class LiteLLMClient:
             timeout=self.settings.request_timeout_s,
             temperature=temperature if temperature is not None else self.settings.default_temperature,
             max_tokens=max_tokens if max_tokens is not None else self.settings.default_max_tokens,
+            metadata=metadata,
         )
         completion = _to_completion(raw, role=self.role)
         completion.parsed = parsed
         return completion
+
+    def _langfuse_metadata(self, request_id: str, actor: str) -> dict[str, Any]:
+        """Metadata LiteLLM forwards to LangFuse.
+
+        `trace_id` groups multiple generations (each `complete()` call) under
+        one trace in the UI; using `request_id` makes the trace joinable to
+        our audit_log rows. `generation_name` distinguishes planner/extractor/
+        judge calls within the same trace.
+        """
+        return {
+            "trace_id": request_id,
+            "trace_name": f"agent-run/{request_id}",
+            "trace_user_id": actor,
+            "session_id": request_id,
+            "generation_name": f"{self.role}-call",
+            "tags": [self.role],
+        }
 
     async def _audit(
         self,

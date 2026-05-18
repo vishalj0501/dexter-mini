@@ -6,6 +6,8 @@ from tortoise.contrib.fastapi import RegisterTortoise
 
 from app.config import settings
 from app.db import TORTOISE_CONFIG
+from app.obs.middleware import RequestIDMiddleware
+from app.routes.agent import router as agent_router
 from app.routes.health import router as health_router
 from app.seeds.seed import seed_if_empty
 
@@ -30,7 +32,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="dexter-mini gateway", version="0.1.0", lifespan=lifespan)
+app.add_middleware(RequestIDMiddleware)
 app.include_router(health_router)
+app.include_router(agent_router)
 
 
 @app.get("/")
