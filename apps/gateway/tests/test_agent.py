@@ -16,8 +16,17 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 
-from app.agent.graph import build_agent_graph
-from app.agent.llm_tools import ALL_TOOLS, get_resident as get_resident_tool
+from app.agent.graph import (
+    _consecutive_tool_calls_without_draft,
+    _drafted_themes,
+    _expected_themes,
+    build_agent_graph,
+)
+from app.agent.llm_tools import (
+    ALL_TOOLS,
+    draft_sis_entry as draft_sis_entry_tool,
+    get_resident as get_resident_tool,
+)
 from app.agent.react_parser import (
     AgentAction,
     AgentFinish,
@@ -360,6 +369,287 @@ Final Answer: Got it — Margarethe Müller (room 12).
         if isinstance(m, HumanMessage) and "Observation" in (m.content or "")
     ]
     assert any("Margarethe" in (m.content or "") for m in obs_msgs)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stage 2 + 3 helpers (theme detection, stuck counting)
+# ────────────────────────────────────────────────────────────────────────────
+
+
+def test_expected_themes_detects_vitals_and_nutrition():
+    msgs = [HumanMessage("BP 130/82 and ate breakfast")]
+    assert _expected_themes(msgs) == {"vitals", "nutrition"}
+
+
+def test_expected_themes_query_only_returns_empty():
+    msgs = [HumanMessage("who is in room 12?")]
+    assert _expected_themes(msgs) == set()
+
+
+def test_drafted_themes_walks_observations():
+    msgs = [
+        HumanMessage("BP 130/82"),
+        HumanMessage(content='Observation: {"entry_id": "e1", "theme": "vitals"}'),
+        HumanMessage(content='Observation: {"status": "resolved", "resident": {"id": "abc"}}'),
+        HumanMessage(content='Observation: {"entry_id": "e2", "theme": "nutrition"}'),
+    ]
+    assert _drafted_themes(msgs) == {"vitals", "nutrition"}
+
+
+def test_consecutive_tool_calls_resets_at_draft():
+    msgs = [
+        HumanMessage(content='Observation: {"status": "resolved"}'),
+        HumanMessage(content='Observation: {"entry_id": "e1", "theme": "vitals"}'),
+        HumanMessage(content='Observation: {"flags": []}'),
+        HumanMessage(content='Observation: {"events": []}'),
+    ]
+    # Walking back: 2 non-draft, then a draft → stops at 2.
+    assert _consecutive_tool_calls_without_draft(msgs) == 2
+
+
+def test_consecutive_tool_calls_no_draft_seen():
+    msgs = [
+        HumanMessage(content='Observation: {"status": "resolved"}'),
+        HumanMessage(content='Observation: {"flags": []}'),
+    ]
+    assert _consecutive_tool_calls_without_draft(msgs) == 2
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stage 2 — reflection on Final Answer
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def test_reflection_rejects_when_themes_missing(resident):
+    """Transcript mentions vitals AND nutrition, but the script only drafts
+    vitals before claiming Final Answer. Reflection should reject the first
+    Final Answer; the second one (after drafting nutrition) is accepted."""
+    rid = str(resident.id)
+    client = ScriptedClient([
+        f'Thought: resolve.\nAction: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
+        (
+            f'Thought: draft vitals.\nAction: draft_sis_entry\nAction Input: '
+            f'{{"theme": "vitals", "resident_id": "{rid}", '
+            f'"content": {{"bp_systolic": 130, "bp_diastolic": 82}}, '
+            f'"source_transcript": "BP 130/82"}}'
+        ),
+        # First Final Answer — premature; reflection should reject (no nutrition).
+        "Thought: done.\nFinal Answer: Documented vitals.",
+        # After reflection feedback, draft nutrition.
+        (
+            f'Thought: forgot nutrition.\nAction: draft_sis_entry\nAction Input: '
+            f'{{"theme": "nutrition", "resident_id": "{rid}", '
+            f'"content": {{"meals": [{{"meal": "breakfast", "intake_pct": 100, "refused": false}}]}}, '
+            f'"source_transcript": "ate breakfast"}}'
+        ),
+        "Thought: now truly done.\nFinal Answer: Documented vitals and nutrition.",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("BP 130/82, ate breakfast for Müller.")]},
+        config=_graph_config("t-reflect", request_id="graph-reflect"),
+    )
+
+    assert state["done"] is True
+    assert "vitals" in state["final_answer"].lower()
+    assert "nutrition" in state["final_answer"].lower()
+
+    # Reflection injected a guidance message between the two Final Answers.
+    reflect_msgs = [
+        m for m in state["messages"]
+        if isinstance(m, HumanMessage) and "REFLECTION CHECK" in (m.content or "")
+    ]
+    assert reflect_msgs, "expected one reflection rejection"
+
+    drafts = await CareEvent.filter(request_id="graph-reflect").all()
+    themes = {d.theme for d in drafts}
+    assert Theme.VITALS in themes
+    assert Theme.NUTRITION in themes
+
+
+async def test_reflection_passes_when_all_themes_drafted(resident):
+    """Sanity check: if every transcript theme is drafted, Final Answer is
+    accepted on the first try without reflection feedback."""
+    rid = str(resident.id)
+    client = ScriptedClient([
+        f'Thought: resolve.\nAction: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
+        (
+            f'Thought: vitals.\nAction: draft_sis_entry\nAction Input: '
+            f'{{"theme": "vitals", "resident_id": "{rid}", '
+            f'"content": {{"bp_systolic": 130, "bp_diastolic": 82}}, '
+            f'"source_transcript": "BP 130/82"}}'
+        ),
+        "Thought: done.\nFinal Answer: Documented vitals.",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("BP 130/82 for Müller.")]},
+        config=_graph_config("t-reflect-ok", request_id="graph-reflect-ok"),
+    )
+    assert state["done"] is True
+    reflect_msgs = [
+        m for m in state["messages"]
+        if isinstance(m, HumanMessage) and "REFLECTION CHECK" in (m.content or "")
+    ]
+    assert not reflect_msgs
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stage 2 — validator retry hints in observation
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def test_validator_retry_hint_added_on_failure(resident):
+    """A pre-seeded draft with content that doesn't match the transcript will
+    fail the heuristic validator. The tools_node should augment the observation
+    with `_retry_hint`."""
+    rid = str(resident.id)
+    seed_config = {"configurable": {"request_id": "preseed", "actor": "agent"}}
+    drafted = await draft_sis_entry_tool.ainvoke(
+        {
+            "theme": "vitals",
+            "resident_id": rid,
+            # In-range BPs that do NOT appear in the transcript text below →
+            # heuristic scores zero grounding → validator fails.
+            "content": {"bp_systolic": 145, "bp_diastolic": 92, "heart_rate": 78},
+            "source_transcript": "no numbers here at all",
+        },
+        config=seed_config,
+    )
+    entry_id = drafted["entry_id"]
+
+    client = ScriptedClient([
+        (
+            f'Thought: validate.\nAction: validate_entry\n'
+            f'Action Input: {{"entry_id": "{entry_id}", "source_transcript": "no numbers here at all"}}'
+        ),
+        "Thought: stop here.\nFinal Answer: Stopped.",
+    ])
+    graph = _fresh_graph(client)
+    # Transcript is a query (no doc keywords) so anti-hallucination + reflection
+    # don't kick in; we just want to see the retry hint on the validate
+    # observation.
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("please validate that entry")]},
+        config=_graph_config("t-retry", request_id="graph-retry"),
+    )
+    obs = [
+        m for m in state["messages"]
+        if isinstance(m, HumanMessage) and "Observation" in (m.content or "")
+    ]
+    hint_msgs = [m for m in obs if "_retry_hint" in (m.content or "")]
+    assert hint_msgs, "validate_entry failure should attach _retry_hint to observation"
+    assert "1/2" in hint_msgs[0].content
+
+
+async def test_validator_gives_up_after_two_failures(resident):
+    """Three consecutive failed validations on the same entry: the third one
+    should switch from _retry_hint to _give_up_hint."""
+    rid = str(resident.id)
+    seed_config = {"configurable": {"request_id": "preseed", "actor": "agent"}}
+    drafted = await draft_sis_entry_tool.ainvoke(
+        {
+            "theme": "vitals",
+            "resident_id": rid,
+            "content": {"bp_systolic": 145, "bp_diastolic": 92},
+            "source_transcript": "no numbers here at all",
+        },
+        config=seed_config,
+    )
+    entry_id = drafted["entry_id"]
+
+    validate_step = (
+        f'Thought: validate.\nAction: validate_entry\n'
+        f'Action Input: {{"entry_id": "{entry_id}", "source_transcript": "no numbers here at all"}}'
+    )
+    client = ScriptedClient([
+        validate_step,  # failure 1 → _retry_hint
+        validate_step,  # failure 2 → _retry_hint
+        validate_step,  # failure 3 → _give_up_hint
+        "Thought: ok stop.\nFinal Answer: Stopped.",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("please validate")]},
+        config=_graph_config("t-giveup", request_id="graph-giveup"),
+    )
+    obs_texts = [
+        m.content for m in state["messages"]
+        if isinstance(m, HumanMessage) and "Observation" in (m.content or "")
+    ]
+    retry_hits = sum("_retry_hint" in t for t in obs_texts)
+    giveup_hits = sum("_give_up_hint" in t for t in obs_texts)
+    assert retry_hits == 2, f"expected 2 retry hints, got {retry_hits}: {obs_texts}"
+    assert giveup_hits == 1, f"expected 1 give-up hint, got {giveup_hits}: {obs_texts}"
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Stage 3 — stuck detection
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def test_stuck_hint_injected_after_many_non_draft_calls(resident):
+    """Six tool calls in a row, none of them draft_sis_entry, on a
+    documentation transcript → the 6th observation should carry _stuck_hint."""
+    rid = str(resident.id)
+    lookup = lambda n=rid: f'Action: get_recent_notes\nAction Input: {{"resident_id": "{n}"}}'
+    client = ScriptedClient([
+        f'Action: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
+        lookup(),
+        f'Action: search_care_plan\nAction Input: {{"resident_id": "{rid}"}}',
+        (
+            f'Action: check_vital_ranges\nAction Input: '
+            f'{{"resident_id": "{rid}", "vitals": {{"bp_systolic": 130}}}}'
+        ),
+        lookup(),
+        lookup(),
+        # Finally a draft + finish so the run terminates without reflection bumps.
+        (
+            f'Action: draft_sis_entry\nAction Input: '
+            f'{{"theme": "vitals", "resident_id": "{rid}", '
+            f'"content": {{"bp_systolic": 130, "bp_diastolic": 82}}, '
+            f'"source_transcript": "BP 130/82"}}'
+        ),
+        "Final Answer: Documented vitals.",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("BP 130/82 for Frau Müller.")]},
+        config=_graph_config("t-stuck", request_id="graph-stuck"),
+    )
+    stuck_obs = [
+        m for m in state["messages"]
+        if isinstance(m, HumanMessage) and "_stuck_hint" in (m.content or "")
+    ]
+    assert stuck_obs, "expected _stuck_hint after 6 non-draft tool calls"
+
+
+async def test_stuck_hint_not_injected_on_query_transcript(resident):
+    """If the transcript is just a query (no doc keywords), stuck detection
+    stays quiet even with many tool calls — we don't pressure the agent into
+    drafting fictional documentation."""
+    rid = str(resident.id)
+    lookup = lambda: f'Action: get_recent_notes\nAction Input: {{"resident_id": "{rid}"}}'
+    client = ScriptedClient([
+        f'Action: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
+        lookup(),
+        lookup(),
+        lookup(),
+        lookup(),
+        lookup(),
+        lookup(),
+        "Final Answer: All quiet on that shift.",
+    ])
+    graph = _fresh_graph(client)
+    state = await graph.ainvoke(
+        {"messages": [HumanMessage("any recent notes on Müller?")]},
+        config=_graph_config("t-stuck-query", request_id="graph-stuck-q"),
+    )
+    stuck_obs = [
+        m for m in state["messages"]
+        if isinstance(m, HumanMessage) and "_stuck_hint" in (m.content or "")
+    ]
+    assert not stuck_obs
 
 
 async def test_ask_caregiver_writes_audit_row_before_pausing(resident, other_resident):

@@ -50,6 +50,14 @@ log = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────
 
 
+def _merge_validation_failures(left: dict[str, int] | None, right: dict[str, int] | None) -> dict[str, int]:
+    """Reducer that sums per-entry validation failure counts."""
+    out = dict(left or {})
+    for k, v in (right or {}).items():
+        out[k] = out.get(k, 0) + (v if isinstance(v, int) else 1)
+    return out
+
+
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     pending_action: dict[str, Any] | None
@@ -58,6 +66,10 @@ class AgentState(TypedDict, total=False):
     final_answer: str | None
     drafts_created: Annotated[list[str], operator.add]  # entry_ids from real draft_sis_entry runs
     finish_attempts: Annotated[int, operator.add]
+    # Day 4 Stage 2: per-entry validation failure counts. Bumps each time
+    # validate_entry returns passed=False; once an entry hits 2, the model
+    # gets a give-up hint instead of another retry hint.
+    validation_failures: Annotated[dict[str, int], _merge_validation_failures]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -121,6 +133,91 @@ def _looks_like_documentation(messages: list[BaseMessage]) -> bool:
         return False
     text = first.content or ""
     return bool(_DOC_KEYWORDS.search(text))
+
+
+# Theme-by-theme keyword detection. Used by the reflection step to identify
+# which themes the transcript mentions vs. which were actually drafted.
+_THEME_KEYWORDS: dict[str, re.Pattern[str]] = {
+    "vitals": re.compile(
+        r"\b(bp|pulse|heart\s*rate|hr|temp(?:erature)?|o2|sat(?:uration)?|"
+        r"blood\s*pressure|weight)\b",
+        re.IGNORECASE,
+    ),
+    "nutrition": re.compile(
+        r"\b(ate|eat|eating|refused|breakfast|lunch|dinner|meal|appetite|"
+        r"hydration|fluid|drink|drank)\b",
+        re.IGNORECASE,
+    ),
+    "mobility": re.compile(
+        r"\b(walk|walked|walking|fell|fall|falls|mobility|aid|walker|"
+        r"wheelchair|gait|stand|standing|transfer)\b",
+        re.IGNORECASE,
+    ),
+    "cognition": re.compile(
+        r"\b(orient(?:ed|ation)?|confus(?:ed|ion)|memory|cognition|mood|"
+        r"agitat|alert)\b",
+        re.IGNORECASE,
+    ),
+    "incident": re.compile(
+        r"\b(incident|injur(?:y|ed)|emergency|bleeding|seizure)\b",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _expected_themes(messages: list[BaseMessage]) -> set[str]:
+    """Themes the original transcript mentions."""
+    first = next((m for m in messages if isinstance(m, HumanMessage)), None)
+    if not first:
+        return set()
+    text = first.content or ""
+    return {t for t, pat in _THEME_KEYWORDS.items() if pat.search(text)}
+
+
+def _drafted_themes(messages: list[BaseMessage]) -> set[str]:
+    """Themes for which we saw a real draft_sis_entry Observation (entry_id + theme)."""
+    themes: set[str] = set()
+    for m in messages:
+        if not isinstance(m, HumanMessage):
+            continue
+        text = m.content or ""
+        if "Observation:" not in text:
+            continue
+        try:
+            obs_text = text.split("Observation:", 1)[1].strip()
+            obs = json.loads(obs_text)
+        except (ValueError, IndexError):
+            continue
+        if isinstance(obs, dict) and obs.get("entry_id") and obs.get("theme"):
+            themes.add(str(obs["theme"]))
+    return themes
+
+
+def _consecutive_tool_calls_without_draft(messages: list[BaseMessage]) -> int:
+    """Count Observation messages from the end backwards, stopping at a draft.
+
+    Used by the stuck-detection guard. A "draft observation" is an Observation
+    whose JSON carries both `entry_id` and `theme` (the shape `draft_sis_entry`
+    returns). Anything else — get_resident, validate_entry, check_vital_ranges,
+    error envelopes — counts toward the stuck total.
+    """
+    count = 0
+    for m in reversed(messages):
+        if not isinstance(m, HumanMessage):
+            continue
+        text = m.content or ""
+        if "Observation:" not in text:
+            continue
+        try:
+            obs_text = text.split("Observation:", 1)[1].strip()
+            obs = json.loads(obs_text)
+        except (ValueError, IndexError):
+            count += 1
+            continue
+        if isinstance(obs, dict) and obs.get("entry_id") and obs.get("theme"):
+            return count
+        count += 1
+    return count
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -202,6 +299,40 @@ def _make_planner_node(client: LLMClient, system_prompt: str):
                     "iteration": state.get("iteration", 0) + 1,
                     "finish_attempts": 1,
                 }
+            # Reflection guard (Stage 2): drafts exist, but the transcript
+            # mentions themes we never drafted. Reject once and ask the model
+            # to cover the gaps. Only run on the first Final Answer attempt;
+            # otherwise we'd loop forever if a theme genuinely has no values
+            # to extract.
+            if needs_drafts and drafts and attempts == 0:
+                expected = _expected_themes(state["messages"])
+                drafted = _drafted_themes(state["messages"])
+                missing = expected - drafted
+                if missing:
+                    log.info(
+                        "planner: reflection — missing themes rid=%s expected=%s drafted=%s",
+                        request_id, sorted(expected), sorted(drafted),
+                    )
+                    reflect = HumanMessage(
+                        content=(
+                            "REFLECTION CHECK before Final Answer.\n"
+                            f"Transcript mentions themes: {sorted(expected)}\n"
+                            f"You drafted themes: {sorted(drafted)}\n"
+                            f"Missing: {sorted(missing)}\n\n"
+                            "Either:\n"
+                            "  1) Call draft_sis_entry for each missing theme using the "
+                            "verbatim transcript values, OR\n"
+                            "  2) If a missing theme genuinely has no documentable "
+                            "values, explain why in a Thought and then emit Final Answer "
+                            "again — you will be accepted the second time.\n"
+                            "Do NOT fabricate values to fill in missing themes."
+                        )
+                    )
+                    return {
+                        "messages": [ai, reflect],
+                        "iteration": state.get("iteration", 0) + 1,
+                        "finish_attempts": 1,
+                    }
             return {
                 "messages": [ai],
                 "done": True,
@@ -258,6 +389,70 @@ def _make_tools_node(tools: list[Any]):
         updates: dict[str, Any] = {"pending_action": None}
         if name == "draft_sis_entry" and isinstance(observation, dict) and observation.get("entry_id"):
             updates["drafts_created"] = [str(observation["entry_id"])]
+
+        # Stage 2 — validator retry / give-up hints. After validate_entry
+        # comes back passed=False, augment the observation with guidance and
+        # bump the per-entry failure counter in state.
+        if (
+            name == "validate_entry"
+            and isinstance(observation, dict)
+            and observation.get("passed") is False
+        ):
+            entry_id = str(observation.get("entry_id") or "")
+            prior = (state.get("validation_failures") or {}).get(entry_id, 0)
+            new_count = prior + 1
+            if entry_id:
+                updates["validation_failures"] = {entry_id: 1}  # reducer sums
+            if new_count <= 2:
+                observation = {
+                    **observation,
+                    "_retry_hint": (
+                        f"Validation failed (attempt {new_count}/2). Re-extract this "
+                        "theme using ONLY values that appear verbatim in the original "
+                        "transcript. Leave any ungrounded field as null. Call "
+                        "draft_sis_entry again to create a fresh draft — do NOT call "
+                        "validate_entry on the existing failed entry_id again."
+                    ),
+                }
+            else:
+                observation = {
+                    **observation,
+                    "_give_up_hint": (
+                        f"This entry has failed validation {new_count} times. Stop "
+                        "retrying it. The entry is already flipped to needs_review "
+                        "in the database. Call flag_for_review with "
+                        "reason='draft repeatedly failed grounding' and "
+                        "severity='medium', then move on to other themes or finish."
+                    ),
+                }
+
+        # Stage 3 — stuck detection. If this call didn't yield a draft AND we
+        # have a documentation transcript AND we've been spinning without
+        # drafting for too long, nudge the agent toward either drafting now
+        # or asking the caregiver.
+        produced_draft = (
+            name == "draft_sis_entry"
+            and isinstance(observation, dict)
+            and observation.get("entry_id")
+        )
+        if (
+            not produced_draft
+            and name != "ask_caregiver"
+            and _looks_like_documentation(state["messages"])
+        ):
+            # Count includes the current call (about to be appended).
+            non_draft_total = _consecutive_tool_calls_without_draft(state["messages"]) + 1
+            if non_draft_total > 5 and isinstance(observation, dict):
+                observation = {
+                    **observation,
+                    "_stuck_hint": (
+                        f"You've made {non_draft_total} tool calls without producing "
+                        "a single draft. The transcript contains documentation. Either "
+                        "call draft_sis_entry NOW with the values you already have, or "
+                        "call ask_caregiver to obtain a specific missing value. Do not "
+                        "keep querying."
+                    ),
+                }
 
         obs_text = f"Observation: {json.dumps(observation, default=str)}"
         updates["messages"] = [HumanMessage(content=obs_text)]
