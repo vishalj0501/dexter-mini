@@ -12,14 +12,15 @@ from uuid import UUID
 
 from tortoise.expressions import Q
 
-from app.models import CareEvent, CarePlan, Resident
-from app.schemas.enums import AuditAction, IndependenceLevel
+from app.models import CareEvent, CarePlan, Followup, Resident, ReviewFlag
+from app.schemas.enums import AuditAction, FollowupStatus, IndependenceLevel
 from app.tools._audit import audited
 from app.tools._errors import NotFoundError
 from app.tools._types import (
     CareEventSummary,
     CarePlanSnapshot,
     PendingResident,  # noqa: F401  (kept for symmetry with type module)
+    RecentActivity,
     RecentNotes,
     ResidentCandidate,
     ResidentResolution,
@@ -30,6 +31,48 @@ from app.tools._types import (
 
 def _candidate(r: Resident) -> ResidentCandidate:
     return ResidentCandidate(id=r.id, full_name=r.full_name, room_number=r.room_number)
+
+
+async def _recent_activity(resident_id: UUID) -> RecentActivity:
+    """24h activity snapshot. One indexed query each across three tables.
+
+    Cheap (<5ms in practice) and ships in the FIRST observation the agent
+    sees — so 'this resident has open business' is no longer something the
+    planner has to remember to ask about.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    events = (
+        await CareEvent.filter(resident_id=resident_id, created_at__gte=since)
+        .order_by("-created_at")
+        .values("theme", "created_at")
+    )
+    open_followups = await Followup.filter(
+        resident_id=resident_id, status=FollowupStatus.OPEN
+    ).count()
+    open_flags = await ReviewFlag.filter(resident_id=resident_id, resolved=False).count()
+
+    if not events:
+        return RecentActivity(
+            count_24h=0,
+            open_followups=open_followups,
+            open_flags=open_flags,
+        )
+
+    themes: list[str] = []
+    for row in events:
+        theme = row["theme"]
+        theme_str = theme.value if hasattr(theme, "value") else str(theme)
+        if theme_str not in themes:
+            themes.append(theme_str)
+
+    return RecentActivity(
+        count_24h=len(events),
+        last_event_at=events[0]["created_at"],
+        themes_seen_24h=themes,
+        open_followups=open_followups,
+        open_flags=open_flags,
+    )
 
 
 @audited(AuditAction.GET_RESIDENT)
@@ -60,7 +103,11 @@ async def get_resident(
         resident = await Resident.get_or_none(id=rid)
         if resident is None:
             return ResidentResolution(status="not_found")
-        return ResidentResolution(status="resolved", resident=_candidate(resident))
+        return ResidentResolution(
+            status="resolved",
+            resident=_candidate(resident),
+            recent_activity=await _recent_activity(resident.id),
+        )
 
     # Strip German honorifics so "Frau Müller" matches "Müller".
     cleaned = needle
@@ -78,7 +125,11 @@ async def get_resident(
     if not matches:
         return ResidentResolution(status="not_found")
     if len(matches) == 1:
-        return ResidentResolution(status="resolved", resident=_candidate(matches[0]))
+        return ResidentResolution(
+            status="resolved",
+            resident=_candidate(matches[0]),
+            recent_activity=await _recent_activity(matches[0].id),
+        )
     return ResidentResolution(
         status="ambiguous",
         candidates=[_candidate(r) for r in matches],

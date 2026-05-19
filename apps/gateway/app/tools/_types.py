@@ -32,10 +32,26 @@ class ResidentCandidate(BaseModel):
     room_number: str
 
 
+class RecentActivity(BaseModel):
+    """Lightweight summary the agent sees in its FIRST observation.
+
+    Forces history-awareness by data flow instead of prompt exhortation:
+    if `count_24h > 0`, the planner already knows there's prior activity to
+    consult before drafting.
+    """
+    count_24h: int = 0
+    last_event_at: datetime | None = None
+    themes_seen_24h: list[str] = Field(default_factory=list)
+    open_followups: int = 0
+    open_flags: int = 0
+
+
 class ResidentResolution(BaseModel):
     status: Literal["resolved", "ambiguous", "not_found"]
     resident: ResidentCandidate | None = None
     candidates: list[ResidentCandidate] = Field(default_factory=list)
+    # Only populated when status == "resolved". None on ambiguous/not_found.
+    recent_activity: RecentActivity | None = None
 
 
 class CareEventSummary(BaseModel):
@@ -160,6 +176,7 @@ class PendingList(BaseModel):
 __all__ = [
     "IndependenceLevel",
     "ResidentCandidate",
+    "RecentActivity",
     "ResidentResolution",
     "CareEventSummary",
     "RecentNotes",

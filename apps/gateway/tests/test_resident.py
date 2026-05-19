@@ -66,6 +66,91 @@ async def test_get_resident_writes_audit(resident):
     assert rows[0].payload["status"] == "ok"
 
 
+# ---------- get_resident.recent_activity ----------
+
+
+async def test_resolved_includes_empty_recent_activity_when_no_history(resident):
+    result = await get_resident("Müller", request_id=REQUEST_ID)
+    assert result.status == "resolved"
+    ra = result.recent_activity
+    assert ra is not None
+    assert ra.count_24h == 0
+    assert ra.last_event_at is None
+    assert ra.themes_seen_24h == []
+    assert ra.open_followups == 0
+    assert ra.open_flags == 0
+
+
+async def test_resolved_recent_activity_counts_24h_events(resident):
+    """Three events: two within 24h, one older. Only the two should count, and
+    distinct themes should be returned newest-first."""
+    now = utcnow()
+    await CareEvent.create(
+        resident=resident, theme=Theme.VITALS, content={"bp_systolic": 140},
+        source_transcript="BP 140", status=EventStatus.DRAFT,
+        created_at=now - timedelta(hours=2),
+    )
+    await CareEvent.create(
+        resident=resident, theme=Theme.NUTRITION, content={"appetite": "good"},
+        source_transcript="ate breakfast", status=EventStatus.FINAL,
+        created_at=now - timedelta(hours=10),
+    )
+    await CareEvent.create(
+        resident=resident, theme=Theme.VITALS, content={"bp_systolic": 130},
+        source_transcript="BP 130", status=EventStatus.FINAL,
+        created_at=now - timedelta(days=3),
+    )
+
+    result = await get_resident("Müller", request_id=REQUEST_ID)
+    ra = result.recent_activity
+    assert ra.count_24h == 2
+    assert ra.themes_seen_24h == ["vitals", "nutrition"]  # newest-first, deduped
+    assert ra.last_event_at is not None
+
+
+async def test_resolved_recent_activity_counts_open_flags_and_followups(resident):
+    from datetime import datetime, timezone
+    from app.models import Followup, ReviewFlag
+    from app.schemas.enums import FlagSeverity, FollowupStatus
+
+    await ReviewFlag.create(
+        resident=resident, reason="elevated BP", severity=FlagSeverity.HIGH,
+        request_id=REQUEST_ID, resolved=False,
+    )
+    await ReviewFlag.create(
+        resident=resident, reason="resolved one", severity=FlagSeverity.LOW,
+        request_id=REQUEST_ID, resolved=True,
+    )
+    await Followup.create(
+        resident=resident, action="Re-check BP",
+        due_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        status=FollowupStatus.OPEN,
+    )
+    await Followup.create(
+        resident=resident, action="Old closed item",
+        due_at=datetime.now(timezone.utc) - timedelta(days=1),
+        status=FollowupStatus.DONE,
+    )
+
+    result = await get_resident("Müller", request_id=REQUEST_ID)
+    ra = result.recent_activity
+    assert ra.open_flags == 1
+    assert ra.open_followups == 1
+
+
+async def test_ambiguous_has_no_recent_activity(resident, other_resident):
+    """Ambiguous resolutions don't pick a resident, so no history snapshot."""
+    result = await get_resident("Müller", request_id=REQUEST_ID)
+    assert result.status == "ambiguous"
+    assert result.recent_activity is None
+
+
+async def test_not_found_has_no_recent_activity(resident):
+    result = await get_resident("Nobody", request_id=REQUEST_ID)
+    assert result.status == "not_found"
+    assert result.recent_activity is None
+
+
 # ---------- get_recent_notes ----------
 
 
