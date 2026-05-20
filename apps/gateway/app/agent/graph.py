@@ -193,6 +193,79 @@ def _drafted_themes(messages: list[BaseMessage]) -> set[str]:
     return themes
 
 
+# Final Answer text claiming a flag was raised — used to detect the model
+# narrating an action it never actually performed.
+_FLAG_CLAIM_LANGUAGE = re.compile(
+    r"\b(?:flagged?|raise[d]?\s+(?:a\s+)?flag|escalat(?:e[ds]?|ing)|flag_for_review)\b"
+    r"|\bfor\s+(?:high[- ]severity\s+)?(?:clinical\s+)?review\b",
+    re.IGNORECASE,
+)
+
+
+def _iter_observations(messages: list[BaseMessage]):
+    """Yield parsed Observation dicts in order (real graph-emitted observations)."""
+    for m in messages:
+        if not isinstance(m, HumanMessage):
+            continue
+        text = m.content or ""
+        if "Observation:" not in text:
+            continue
+        try:
+            obs_text = text.split("Observation:", 1)[1].strip()
+            obs = json.loads(obs_text)
+        except (ValueError, IndexError):
+            continue
+        if isinstance(obs, dict):
+            yield obs
+
+
+def _drafted_entry_ids(messages: list[BaseMessage]) -> set[str]:
+    """Entry ids that appear in real draft_sis_entry observations."""
+    ids: set[str] = set()
+    for obs in _iter_observations(messages):
+        # draft_sis_entry obs carries entry_id + theme, no `passed` field.
+        if obs.get("entry_id") and obs.get("theme") and "passed" not in obs:
+            ids.add(str(obs["entry_id"]))
+    return ids
+
+
+def _validated_entry_ids(messages: list[BaseMessage]) -> set[str]:
+    """Entry ids that have a validate_entry observation (regardless of passed)."""
+    ids: set[str] = set()
+    for obs in _iter_observations(messages):
+        # validate_entry obs carries entry_id + passed.
+        if obs.get("entry_id") and "passed" in obs:
+            ids.add(str(obs["entry_id"]))
+    return ids
+
+
+def _flag_for_review_called(messages: list[BaseMessage]) -> bool:
+    """Did any observation carry a real flag_id?"""
+    for obs in _iter_observations(messages):
+        if obs.get("flag_id"):
+            return True
+    return False
+
+
+def _should_have_flagged(messages: list[BaseMessage]) -> bool:
+    """check_vital_ranges returned abnormal, OR watch with a matching plan risk."""
+    plan_risks: list[str] = []
+    for obs in _iter_observations(messages):
+        if "risk_flags" in obs and isinstance(obs.get("risk_flags"), list):
+            plan_risks = [str(r).lower() for r in obs["risk_flags"]]
+    for obs in _iter_observations(messages):
+        overall = obs.get("overall")
+        if overall == "abnormal":
+            return True
+        if overall == "watch" and plan_risks:
+            return True
+    return False
+
+
+def _final_answer_claims_flag(text: str) -> bool:
+    return bool(_FLAG_CLAIM_LANGUAGE.search(text or ""))
+
+
 def _consecutive_tool_calls_without_draft(messages: list[BaseMessage]) -> int:
     """Count Observation messages from the end backwards, stopping at a draft.
 
@@ -299,37 +372,67 @@ def _make_planner_node(client: LLMClient, system_prompt: str):
                     "iteration": state.get("iteration", 0) + 1,
                     "finish_attempts": 1,
                 }
-            # Reflection guard (Stage 2): drafts exist, but the transcript
-            # mentions themes we never drafted. Reject once and ask the model
-            # to cover the gaps. Only run on the first Final Answer attempt;
-            # otherwise we'd loop forever if a theme genuinely has no values
-            # to extract.
-            if needs_drafts and drafts and attempts == 0:
-                expected = _expected_themes(state["messages"])
-                drafted = _drafted_themes(state["messages"])
-                missing = expected - drafted
-                if missing:
-                    log.info(
-                        "planner: reflection — missing themes rid=%s expected=%s drafted=%s",
-                        request_id, sorted(expected), sorted(drafted),
+            # COMPLETION CHECK (Day 4 Stage 4): once any draft exists, the
+            # request is unambiguously documentation. Bundle every issue the
+            # planner left behind into a single rejection. Run up to 2
+            # attempts: the first pass usually forces validation/flag tool
+            # calls; the second catches text-vs-reality lies in the rewritten
+            # Final Answer. Hard cap at 2 so we never loop forever.
+            if drafts and attempts < 2:
+                msgs = state["messages"]
+                expected = _expected_themes(msgs)
+                drafted_th = _drafted_themes(msgs)
+                missing_themes = expected - drafted_th
+
+                drafted_ids = _drafted_entry_ids(msgs)
+                validated_ids = _validated_entry_ids(msgs)
+                unvalidated = drafted_ids - validated_ids
+
+                must_flag = _should_have_flagged(msgs)
+                flagged = _flag_for_review_called(msgs)
+                claims_flag = _final_answer_claims_flag(decision.output)
+
+                issues: list[str] = []
+                if missing_themes:
+                    issues.append(
+                        f"Missing themes: transcript mentions {sorted(expected)}, "
+                        f"you drafted {sorted(drafted_th)}, missing {sorted(missing_themes)}."
                     )
-                    reflect = HumanMessage(
+                if unvalidated:
+                    issues.append(
+                        f"Drafts without validate_entry: {sorted(unvalidated)}. "
+                        f"Call validate_entry on each before finishing."
+                    )
+                if must_flag and not flagged:
+                    issues.append(
+                        "check_vital_ranges flagged abnormal or watch+plan-risk, "
+                        "but flag_for_review was never called. Call it now."
+                    )
+                if claims_flag and not flagged:
+                    issues.append(
+                        "Your Final Answer claims you flagged this for review, but no "
+                        "flag_for_review tool call appears in the observations. "
+                        "Either call flag_for_review (and get a real flag_id) or "
+                        "rewrite the Final Answer without claiming a flag."
+                    )
+
+                if issues:
+                    log.info(
+                        "planner: completion check rejected rid=%s attempt=%d issues=%d",
+                        request_id, attempts, len(issues),
+                    )
+                    bullets = "\n".join(f"  - {i}" for i in issues)
+                    reject = HumanMessage(
                         content=(
-                            "REFLECTION CHECK before Final Answer.\n"
-                            f"Transcript mentions themes: {sorted(expected)}\n"
-                            f"You drafted themes: {sorted(drafted)}\n"
-                            f"Missing: {sorted(missing)}\n\n"
-                            "Either:\n"
-                            "  1) Call draft_sis_entry for each missing theme using the "
-                            "verbatim transcript values, OR\n"
-                            "  2) If a missing theme genuinely has no documentable "
-                            "values, explain why in a Thought and then emit Final Answer "
-                            "again — you will be accepted the second time.\n"
-                            "Do NOT fabricate values to fill in missing themes."
+                            "COMPLETION CHECK before Final Answer — issues found:\n"
+                            f"{bullets}\n\n"
+                            "Fix each above with the appropriate tool call. Do NOT "
+                            "emit Final Answer until each is resolved. Do NOT fabricate "
+                            "ids or claim work you have not done."
                         )
                     )
                     return {
-                        "messages": [ai, reflect],
+                        "messages": [ai, reject],
                         "iteration": state.get("iteration", 0) + 1,
                         "finish_attempts": 1,
                     }
