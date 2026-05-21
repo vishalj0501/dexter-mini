@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 const API_BASE = (import.meta.env.VITE_GATEWAY_URL as string) || "http://localhost:8000";
 
@@ -95,9 +95,78 @@ async function getJSON<T>(path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
+async function postAudio<T>(path: string, blob: Blob): Promise<T> {
+  const fd = new FormData();
+  fd.append("audio", blob, "voice.webm");
+  const r = await fetch(`${API_BASE}${path}`, { method: "POST", body: fd });
+  if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
+  return r.json() as Promise<T>;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Hooks
 // ────────────────────────────────────────────────────────────────────────────
+
+type RecorderState = "idle" | "recording" | "transcribing";
+
+function useVoiceRecorder(onTranscript: (s: string) => void) {
+  const [state, setState] = useState<RecorderState>("idle");
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const startedAtRef = useRef<number>(0);
+  const tickRef = useRef<number | null>(null);
+
+  const stop = useCallback(() => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== "inactive") rec.stop();
+    if (tickRef.current != null) {
+      window.clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+  }, []);
+
+  const start = useCallback(async () => {
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : "audio/webm";
+      const rec = new MediaRecorder(stream, { mimeType: mime });
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(chunksRef.current, { type: mime });
+        if (blob.size === 0) { setState("idle"); return; }
+        setState("transcribing");
+        try {
+          const res = await postAudio<{ transcript: string }>("/transcribe", blob);
+          onTranscript(res.transcript);
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err));
+        } finally {
+          setState("idle");
+          setElapsedMs(0);
+        }
+      };
+      recorderRef.current = rec;
+      startedAtRef.current = performance.now();
+      tickRef.current = window.setInterval(() => {
+        setElapsedMs(Math.floor(performance.now() - startedAtRef.current));
+      }, 100);
+      rec.start();
+      setState("recording");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "mic permission denied");
+      setState("idle");
+    }
+  }, [onTranscript]);
+
+  return { state, elapsedMs, error, start, stop };
+}
 
 function useStoredRuns(): [StoredRun[], (r: StoredRun) => void, () => void] {
   const [runs, setRuns] = useState<StoredRun[]>(() => {
@@ -250,6 +319,32 @@ function Header({ residentCount }: { residentCount: number }) {
   );
 }
 
+function VoiceControl({ onTranscript, disabled }: { onTranscript: (s: string) => void; disabled: boolean }) {
+  const { state, elapsedMs, error, start, stop } = useVoiceRecorder(onTranscript);
+  const seconds = (elapsedMs / 1000).toFixed(1);
+  const label =
+    state === "recording" ? `● Recording ${seconds}s — click to stop` :
+    state === "transcribing" ? "Transcribing…" :
+    "🎙 Voice";
+  const cls =
+    state === "recording" ? "bg-red-50 border-red-300 text-red-700 hover:bg-red-100" :
+    state === "transcribing" ? "bg-slate-100 border-slate-300 text-slate-500 cursor-wait" :
+    "bg-white border-slate-300 text-slate-700 hover:bg-slate-50";
+  return (
+    <div className="flex flex-col items-end">
+      <button
+        type="button"
+        onClick={state === "recording" ? stop : start}
+        disabled={disabled || state === "transcribing"}
+        className={`text-[11px] font-medium border rounded px-2 py-0.5 ${cls} disabled:opacity-40`}
+      >
+        {label}
+      </button>
+      {error && <span className="text-[10px] text-red-600 mt-0.5">{error}</span>}
+    </div>
+  );
+}
+
 function LeftRail({
   transcript, setTranscript, runAgent, running, runs, residents, clearRuns,
 }: {
@@ -264,7 +359,10 @@ function LeftRail({
   return (
     <aside className="border-r border-slate-200 bg-white overflow-y-auto p-4 space-y-4">
       <section>
-        <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">Transcript</div>
+        <div className="flex items-baseline justify-between mb-1">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Transcript</div>
+          <VoiceControl onTranscript={t => setTranscript(t)} disabled={running} />
+        </div>
         <textarea
           value={transcript}
           onChange={e => setTranscript(e.target.value)}

@@ -17,6 +17,7 @@ dependencies = [
     # which was removed in langfuse v3+. Pin to the 2.x line until LiteLLM
     # ships a v3-compatible callback.
     "langfuse>=2.50,<3.0",
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]

@@ -12,6 +12,7 @@ from app.routes.agent import router as agent_router
 from app.routes.audit import router as audit_router
 from app.routes.health import router as health_router
 from app.routes.residents import router as residents_router
+from app.routes.transcribe import router as transcribe_router
 from app.seeds.seed import seed_if_empty
 
 logging.basicConfig(level=settings.LOG_LEVEL)
@@ -54,6 +55,7 @@ app.include_router(health_router)
 app.include_router(agent_router)
 app.include_router(residents_router)
 app.include_router(audit_router)
+app.include_router(transcribe_router)
 
 
 @app.get("/")
