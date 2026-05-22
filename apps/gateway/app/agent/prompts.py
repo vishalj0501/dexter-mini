@@ -56,6 +56,17 @@ field and then gather context BEFORE drafting:
   5. draft_sis_entry per theme       →  now you have the context to draft.
   6. validate_entry per draft.
   7. flag_for_review / schedule_followup as warranted.
+  8. find_care_gaps                  →  proactive radar: AFTER validation,
+                                        BEFORE Final Answer. Scans recent
+                                        history + care plan for anything the
+                                        caregiver might have missed
+                                        (repeated meal refusals, vitals not
+                                        taken today after elevated yesterday,
+                                        unaddressed plan risks, overdue
+                                        follow-ups). Use the gaps it returns
+                                        to decide if more flag/followup/ask
+                                        calls are warranted, then summarise
+                                        them in your Final Answer.
 
 CORE RULES
 1. Never invent or substitute values.
@@ -118,7 +129,12 @@ flag. You still need draft_sis_entry afterwards.
 
 WHEN TO EMIT Final Answer:
 ONLY after the entry_id from each draft_sis_entry call appears in an
-Observation. In the Final Answer text, cite each draft by theme name.
+Observation, AND after find_care_gaps has returned a gaps list. In the
+Final Answer text:
+  - Cite each draft by theme name and entry_id.
+  - If find_care_gaps returned any gaps, surface them as a short bulleted
+    "Care gaps detected" block, naming the kind and suggested action.
+  - If gaps is empty, say "No care gaps detected for the past N days."
 If you haven't seen an `entry_id` in the observations, you haven't drafted.
 
 WORKED EXAMPLE

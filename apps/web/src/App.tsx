@@ -8,7 +8,14 @@ const API_BASE = (import.meta.env.VITE_GATEWAY_URL as string) || "http://localho
 
 type AgentStatus = "complete" | "awaiting_caregiver";
 
-interface ToolCall { name: string; args: Record<string, unknown>; }
+interface ToolCall { name: string; args: Record<string, unknown>; output?: unknown }
+interface CareGapItem {
+  kind: string;
+  severity: "info" | "watch" | "high";
+  description: string;
+  suggested_action?: string | null;
+  evidence?: Record<string, unknown>;
+}
 interface SerialMessage { type: string; content: string | null; name?: string; tool_call_id?: string; }
 interface PendingQuestion { question: string; context: Record<string, unknown>; }
 
@@ -291,6 +298,7 @@ export default function App() {
                 />
               )}
               {trace.final_message && <FinalAnswer text={trace.final_message} />}
+              <CareGaps toolCalls={trace.tool_calls} />
               <Trajectory toolCalls={trace.tool_calls} />
               {audit && <DBWrites audit={audit} />}
               <Conversation messages={trace.messages} />
@@ -521,6 +529,62 @@ function FinalAnswer({ text }: { text: string }) {
       <div className="text-xs uppercase tracking-wide text-emerald-700 mb-1">Final answer</div>
       <div className="text-sm text-slate-900 whitespace-pre-wrap">{text}</div>
     </div>
+  );
+}
+
+function CareGaps({ toolCalls }: { toolCalls: ToolCall[] }) {
+  // Find the most recent find_care_gaps observation.
+  const radar = [...toolCalls].reverse().find(tc => tc.name === "find_care_gaps");
+  if (!radar || !radar.output || typeof radar.output !== "object") return null;
+  const output = radar.output as { gaps?: CareGapItem[]; days_considered?: number };
+  const gaps = output.gaps ?? [];
+  const days = output.days_considered ?? 5;
+
+  return (
+    <section className="bg-white border border-slate-200 rounded-md p-4">
+      <div className="flex items-baseline justify-between mb-2">
+        <h3 className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+          <span>🛰️</span>
+          <span>Care Gap Radar</span>
+          <span className="text-xs font-normal text-slate-400">
+            ({gaps.length} gap{gaps.length === 1 ? "" : "s"} · past {days} days)
+          </span>
+        </h3>
+      </div>
+      {gaps.length === 0 ? (
+        <div className="text-xs text-slate-500 italic">
+          No care gaps detected for the past {days} days.
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {gaps.map((g, i) => <GapRow key={i} gap={g} />)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function GapRow({ gap }: { gap: CareGapItem }) {
+  const sev = gap.severity || "info";
+  const sevCls =
+    sev === "high"  ? "bg-red-50 border-red-300 text-red-800" :
+    sev === "watch" ? "bg-amber-50 border-amber-300 text-amber-800" :
+                      "bg-slate-50 border-slate-200 text-slate-700";
+  const sevLabel = sev.toUpperCase();
+  const kindLabel = gap.kind.replace(/_/g, " ");
+  return (
+    <li className={`border rounded-md p-2 ${sevCls}`}>
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] font-bold tracking-wide">{sevLabel}</span>
+        <span className="text-xs font-mono">{kindLabel}</span>
+      </div>
+      <div className="text-sm mt-0.5">{gap.description}</div>
+      {gap.suggested_action && (
+        <div className="text-xs mt-1 opacity-80">
+          → {gap.suggested_action}
+        </div>
+      )}
+    </li>
   );
 }
 

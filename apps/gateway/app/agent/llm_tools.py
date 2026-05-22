@@ -25,6 +25,7 @@ from langgraph.types import interrupt
 
 from app.schemas.enums import FlagSeverity, Theme
 from app.tools import drafting as _drafting
+from app.tools import gaps as _gaps
 from app.tools import resident as _resident
 from app.tools import workflow as _workflow
 
@@ -384,6 +385,38 @@ async def list_pending_documentation(
     )
     return result.model_dump(mode="json")
 
+@tool
+async def find_care_gaps(
+    resident_id: str,
+    days: int = 5,
+    config: RunnableConfig = None,
+) -> dict:
+    """Scan the resident for unaddressed care items — the proactive radar.
+
+    Call this AFTER you've drafted and validated today's events, BEFORE the
+    Final Answer. It looks across the last `days` of care_events, the
+    active care plan, and open follow-ups to surface gaps the caregiver
+    might otherwise miss: nutrition refusal patterns, vitals not taken
+    today after elevated readings yesterday, plan risks that weren't
+    flagged, escalating trends, overdue follow-ups.
+
+    The output is advisory — it does NOT raise flags or schedule
+    follow-ups on its own. Use the returned gaps to decide whether to
+    call flag_for_review, schedule_followup, or ask_caregiver, and
+    surface them to the caregiver in your Final Answer.
+
+    Args:
+        resident_id: UUID of the resident, from get_resident.
+        days: Lookback window in days (default 5).
+    """
+    request_id, actor = _ctx(config)
+    result = await _gaps.find_care_gaps(
+        _parse_uuid(resident_id), days=days,
+        request_id=request_id, actor=actor,
+    )
+    return result.model_dump(mode="json")
+
+
 ALL_TOOLS = [
     # resident
     get_resident,
@@ -401,6 +434,8 @@ ALL_TOOLS = [
     schedule_followup,
     finalize_entry,
     list_pending_documentation,
+    # gaps (proactive radar)
+    find_care_gaps,
 ]
 
 

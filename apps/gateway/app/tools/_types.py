@@ -176,6 +176,31 @@ class PendingList(BaseModel):
     pending: list[PendingResident] = Field(default_factory=list)
 
 
+# ---------- gaps.py ----------
+
+
+class CareGap(BaseModel):
+    """One unaddressed care item the radar surfaces."""
+    kind: Literal[
+        "nutrition_pattern",        # repeated refusals over recent days
+        "missing_vital",            # elevated yesterday, not measured today
+        "plan_risk_unaddressed",    # care plan flags a risk + today's events touched it without action
+        "escalating_vital",         # 3+ readings trending in one direction
+        "overdue_followup",         # an open follow-up is past its due_at
+    ]
+    severity: Literal["info", "watch", "high"]
+    description: str
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    # The agent or UI can use these to drive the next action.
+    suggested_action: str | None = None
+
+
+class CareGapReport(BaseModel):
+    resident_id: UUID
+    days_considered: int
+    gaps: list[CareGap] = Field(default_factory=list)
+
+
 # Cross-cutting: independence enum re-export so tests don't reach into schemas/.
 __all__ = [
     "IndependenceLevel",
@@ -199,4 +224,6 @@ __all__ = [
     "FinalizeResult",
     "PendingResident",
     "PendingList",
+    "CareGap",
+    "CareGapReport",
 ]

@@ -63,6 +63,7 @@ class AuditAction(str, Enum):
     SCHEDULE_FOLLOWUP = "tool.schedule_followup"
     FINALIZE_ENTRY = "tool.finalize_entry"
     LIST_PENDING_DOCUMENTATION = "tool.list_pending_documentation"
+    FIND_CARE_GAPS = "tool.find_care_gaps"
 
 
 class FollowupStatus(str, Enum):

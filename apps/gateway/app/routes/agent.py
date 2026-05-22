@@ -40,14 +40,14 @@ class AgentRunRequest(BaseModel):
         description="Optional thread id. Omit to start a new conversation; the "
                     "response carries the assigned thread_id either way.",
     )
-    recursion_limit: int = Field(30, ge=1, le=100)
+    recursion_limit: int = Field(50, ge=1, le=100)
 
 
 class AgentResumeRequest(BaseModel):
     thread_id: str
     reply: str = Field(..., min_length=1, description="The caregiver's response to the agent's question.")
     actor: str = Field("agent")
-    recursion_limit: int = Field(30, ge=1, le=100)
+    recursion_limit: int = Field(50, ge=1, le=100)
 
 
 class PendingQuestion(BaseModel):
@@ -141,23 +141,40 @@ def _to_trace(state: dict[str, Any], *, request_id: str, thread_id: str) -> Agen
 
 
 def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
-    """Walk message history and pull out the parsed actions.
+    """Walk message history and pull out the parsed actions paired with
+    their observations.
 
     For Day 4 we re-parse the AIMessage content (ReAct text) rather than
-    rely on .tool_calls — Replicate doesn't emit those.
+    rely on .tool_calls — Replicate doesn't emit those. We then look at the
+    immediately-following HumanMessage for the `Observation:` JSON and
+    attach it as `output` so the UI can render tool results (e.g. the Care
+    Gap Radar) without an extra round trip.
     """
+    import json
+
     from app.agent.react_parser import AgentAction, parse_react_output
 
     out: list[dict[str, Any]] = []
-    for m in messages:
+    for i, m in enumerate(messages):
         if not isinstance(m, AIMessage) or not m.content:
             continue
         try:
             parsed = parse_react_output(m.content)
         except Exception:
             continue
-        if isinstance(parsed, AgentAction):
-            out.append({"name": parsed.tool, "args": parsed.tool_input})
+        if not isinstance(parsed, AgentAction):
+            continue
+        output: Any = None
+        # The graph emits Observation as the next HumanMessage.
+        if i + 1 < len(messages):
+            nxt = messages[i + 1]
+            text = getattr(nxt, "content", "") or ""
+            if "Observation:" in text:
+                try:
+                    output = json.loads(text.split("Observation:", 1)[1].strip())
+                except (ValueError, IndexError):
+                    output = None
+        out.append({"name": parsed.tool, "args": parsed.tool_input, "output": output})
     return out
 
 
