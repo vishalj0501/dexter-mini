@@ -214,6 +214,34 @@ _VITAL_RULES: dict[str, dict[str, tuple[float, float, float, float]]] = {
 }
 
 
+# Hard physiological bounds — anything outside is impossible-in-a-human and
+# must be a transcription / dictation error, NOT a real measurement. The
+# agent's job here is to ask the caregiver, not to "correct" the number to
+# something plausible. Substituting silently is documentation fraud.
+_PLAUSIBLE_BOUNDS: dict[str, tuple[float, float]] = {
+    "bp_systolic": (40, 260),
+    "bp_diastolic": (20, 180),
+    "heart_rate": (20, 250),
+    "temperature_c": (28.0, 43.0),
+    "o2_sat": (40, 100),
+}
+
+
+def _implausible(field: str, value: float) -> VitalFlag | None:
+    lo, hi = _PLAUSIBLE_BOUNDS.get(field, (float("-inf"), float("inf")))
+    if value < lo or value > hi:
+        return VitalFlag(
+            field=field,
+            value=value,
+            reason=(
+                f"{field} {value} is physiologically impossible "
+                f"(expected {lo}–{hi}). Likely transcription error."
+            ),
+            severity="implausible",
+        )
+    return None
+
+
 def _classify(field: str, value: float) -> VitalFlag | None:
     rule = _VITAL_RULES.get(field)
     if rule is None:
@@ -264,6 +292,7 @@ async def check_vital_ranges(
         raise NotFoundError(f"resident {resident_id} not found")
 
     flags: list[VitalFlag] = []
+    implausible_flags: list[VitalFlag] = []
     for field, value in vitals.items():
         if value is None:
             continue
@@ -271,9 +300,22 @@ async def check_vital_ranges(
             numeric = float(value)
         except (TypeError, ValueError):
             continue
+        # Check implausibility first — if it's outside human physiology we
+        # short-circuit and force the agent to ask, not draft.
+        imp = _implausible(field, numeric)
+        if imp:
+            implausible_flags.append(imp)
+            continue
         flag = _classify(field, numeric)
         if flag:
             flags.append(flag)
+
+    if implausible_flags:
+        return VitalCheckResult(
+            resident_id=resident_id,
+            flags=implausible_flags,
+            overall="implausible",
+        )
 
     flags.extend(_baseline_delta_flags(resident.baseline_vitals or {}, vitals))
 

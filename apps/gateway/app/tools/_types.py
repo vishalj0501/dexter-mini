@@ -82,13 +82,17 @@ class VitalFlag(BaseModel):
     field: str
     value: float
     reason: str
-    severity: Literal["info", "warn", "critical"]
+    # "implausible" — value is physiologically impossible (BP > 250, HR > 250,
+    # …). Agent must NEVER substitute its own value; it must ask_caregiver.
+    severity: Literal["info", "warn", "critical", "implausible"]
 
 
 class VitalCheckResult(BaseModel):
     resident_id: UUID
     flags: list[VitalFlag] = Field(default_factory=list)
-    overall: Literal["normal", "watch", "abnormal"] = "normal"
+    # "implausible" trumps everything else: at least one value is outside
+    # human physiology and the agent must clarify before drafting.
+    overall: Literal["normal", "watch", "abnormal", "implausible"] = "normal"
 
 
 # ---------- drafting.py ----------

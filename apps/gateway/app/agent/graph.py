@@ -266,6 +266,24 @@ def _final_answer_claims_flag(text: str) -> bool:
     return bool(_FLAG_CLAIM_LANGUAGE.search(text or ""))
 
 
+def _implausible_vitals_drafted(messages: list[BaseMessage]) -> bool:
+    """Did `check_vital_ranges` return overall='implausible' AND was a vitals
+    draft created anyway? The agent should have called ask_caregiver instead.
+    """
+    seen_implausible = False
+    for obs in _iter_observations(messages):
+        if obs.get("overall") == "implausible":
+            seen_implausible = True
+        if (
+            seen_implausible
+            and obs.get("entry_id")
+            and obs.get("theme") == "vitals"
+            and "passed" not in obs
+        ):
+            return True
+    return False
+
+
 def _consecutive_tool_calls_without_draft(messages: list[BaseMessage]) -> int:
     """Count Observation messages from the end backwards, stopping at a draft.
 
@@ -415,6 +433,13 @@ def _make_planner_node(client: LLMClient, system_prompt: str):
                         "Either call flag_for_review (and get a real flag_id) or "
                         "rewrite the Final Answer without claiming a flag."
                     )
+                if _implausible_vitals_drafted(msgs):
+                    issues.append(
+                        "check_vital_ranges returned overall='implausible' but you "
+                        "drafted vitals anyway. Silent value-substitution is "
+                        "documentation fraud. Skip the vitals draft and call "
+                        "ask_caregiver to confirm the real numbers."
+                    )
 
                 if issues:
                     log.info(
@@ -492,6 +517,24 @@ def _make_tools_node(tools: list[Any]):
         updates: dict[str, Any] = {"pending_action": None}
         if name == "draft_sis_entry" and isinstance(observation, dict) and observation.get("entry_id"):
             updates["drafts_created"] = [str(observation["entry_id"])]
+
+        # Implausibility hint — when check_vital_ranges returns "implausible"
+        # the only safe next move is ask_caregiver. Spell that out in the
+        # observation so the model can't miss it.
+        if (
+            name == "check_vital_ranges"
+            and isinstance(observation, dict)
+            and observation.get("overall") == "implausible"
+        ):
+            observation = {
+                **observation,
+                "_implausible_hint": (
+                    "The values you tried to verify are outside human physiology. "
+                    "DO NOT draft a vitals entry. DO NOT substitute your own "
+                    "plausible numbers — that is documentation fraud. Call "
+                    "ask_caregiver to confirm what the caregiver actually measured."
+                ),
+            }
 
         # Stage 2 — validator retry / give-up hints. After validate_entry
         # comes back passed=False, augment the observation with guidance and
