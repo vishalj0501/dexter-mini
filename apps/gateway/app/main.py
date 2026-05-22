@@ -36,8 +36,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="dexter-mini gateway", version="0.1.0", lifespan=lifespan)
-# Browser-facing dev frontends. Production deploys will lock this down to the
-# actual web origin via env.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

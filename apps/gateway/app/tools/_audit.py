@@ -1,14 +1,4 @@
-"""Tool-call auditing.
-
-Every tool wraps itself with `@audited(action)`. The decorator captures the call
-duration, summarises the args + result, and writes a row to `audit_log` — even
-when the tool raises. The agent and any downstream observer can trace any
-action back to its row via `request_id`.
-
-Why a decorator: a tool's "I did the work" code and its "let posterity know"
-code are orthogonal concerns. Keeping them on separate axes lets tool bodies
-read like ordinary domain code.
-"""
+"""Tool-call auditing."""
 
 from __future__ import annotations
 
@@ -90,7 +80,7 @@ def audited(action: AuditAction) -> Callable[[Callable[..., Awaitable[T]]], Call
             await _record(action, actor, request_id, payload, started)
             return result
 
-        wrapper.__audit_action__ = action  # type: ignore[attr-defined]
+        wrapper.__audit_action__ = action
         return wrapper
 
     return decorator

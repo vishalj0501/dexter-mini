@@ -1,9 +1,4 @@
-"""Role → LLMClient lookup.
-
-Call sites declare a role; this router picks the configured primary + fallback
-models and returns a ready-to-call client. Built per-process (clients are
-stateless apart from the shared breaker), so this is just a small cache.
-"""
+"""Role-to-LLMClient lookup."""
 
 from __future__ import annotations
 
@@ -17,12 +12,8 @@ from app.llm.reliability import default_breaker
 
 @lru_cache(maxsize=8)
 def get_client(role: Role) -> LLMClient:
-    """Return a configured LLM client for the given role.
-
-    Roles: "planner" | "extractor" | "judge". The mapping to model strings
-    is in `app/llm/_settings.py` (env-overridable via `DEXTER_LLM_*`).
-    """
-    settings = _s.llm_settings  # read module attribute lazily
+    """Return a configured LLM client for the given role."""
+    settings = _s.llm_settings
     primary, fallback = models_for(role, settings)
     return LiteLLMClient(
         role=role,

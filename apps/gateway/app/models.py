@@ -67,7 +67,6 @@ class CareEvent(models.Model):
     request_id = fields.CharField(max_length=64, null=True)
     validator_confidence = fields.FloatField(null=True)
 
-    # Explicit default so seeds and replays can set historical timestamps.
     created_at = fields.DatetimeField(default=_utcnow)
     finalized_at = fields.DatetimeField(null=True)
 

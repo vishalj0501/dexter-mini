@@ -1,10 +1,4 @@
-"""Shared Pydantic I/O models for the tool layer.
-
-Tool inputs and outputs are typed at this boundary because (a) the agent's
-LLM sees these shapes as function signatures and (b) the audit log
-serialises them. Anything that needs to round-trip through audit_log lives
-here.
-"""
+"""Shared Pydantic I/O models for the tool layer."""
 
 from __future__ import annotations
 
@@ -23,9 +17,6 @@ from app.schemas.enums import (
 )
 
 
-# ---------- resident.py ----------
-
-
 class ResidentCandidate(BaseModel):
     id: UUID
     full_name: str
@@ -33,12 +24,7 @@ class ResidentCandidate(BaseModel):
 
 
 class RecentActivity(BaseModel):
-    """Lightweight summary the agent sees in its FIRST observation.
-
-    Forces history-awareness by data flow instead of prompt exhortation:
-    if `count_24h > 0`, the planner already knows there's prior activity to
-    consult before drafting.
-    """
+    """Recent resident activity snapshot."""
     count_24h: int = 0
     last_event_at: datetime | None = None
     themes_seen_24h: list[str] = Field(default_factory=list)
@@ -50,7 +36,6 @@ class ResidentResolution(BaseModel):
     status: Literal["resolved", "ambiguous", "not_found"]
     resident: ResidentCandidate | None = None
     candidates: list[ResidentCandidate] = Field(default_factory=list)
-    # Only populated when status == "resolved". None on ambiguous/not_found.
     recent_activity: RecentActivity | None = None
 
 
@@ -82,20 +67,13 @@ class VitalFlag(BaseModel):
     field: str
     value: float
     reason: str
-    # "implausible" — value is physiologically impossible (BP > 250, HR > 250,
-    # …). Agent must NEVER substitute its own value; it must ask_caregiver.
     severity: Literal["info", "warn", "critical", "implausible"]
 
 
 class VitalCheckResult(BaseModel):
     resident_id: UUID
     flags: list[VitalFlag] = Field(default_factory=list)
-    # "implausible" trumps everything else: at least one value is outside
-    # human physiology and the agent must clarify before drafting.
     overall: Literal["normal", "watch", "abnormal", "implausible"] = "normal"
-
-
-# ---------- drafting.py ----------
 
 
 class DraftResult(BaseModel):
@@ -132,9 +110,6 @@ class NarrativeSummary(BaseModel):
 class RedactionResult(BaseModel):
     redacted_text: str
     mapping: dict[str, str] = Field(default_factory=dict)
-
-
-# ---------- workflow.py ----------
 
 
 class PendingQuestion(BaseModel):
@@ -176,22 +151,18 @@ class PendingList(BaseModel):
     pending: list[PendingResident] = Field(default_factory=list)
 
 
-# ---------- gaps.py ----------
-
-
 class CareGap(BaseModel):
     """One unaddressed care item the radar surfaces."""
     kind: Literal[
-        "nutrition_pattern",        # repeated refusals over recent days
-        "missing_vital",            # elevated yesterday, not measured today
-        "plan_risk_unaddressed",    # care plan flags a risk + today's events touched it without action
-        "escalating_vital",         # 3+ readings trending in one direction
-        "overdue_followup",         # an open follow-up is past its due_at
+        "nutrition_pattern",
+        "missing_vital",
+        "plan_risk_unaddressed",
+        "escalating_vital",
+        "overdue_followup",
     ]
     severity: Literal["info", "watch", "high"]
     description: str
     evidence: dict[str, Any] = Field(default_factory=dict)
-    # The agent or UI can use these to drive the next action.
     suggested_action: str | None = None
 
 
@@ -201,7 +172,6 @@ class CareGapReport(BaseModel):
     gaps: list[CareGap] = Field(default_factory=list)
 
 
-# Cross-cutting: independence enum re-export so tests don't reach into schemas/.
 __all__ = [
     "IndependenceLevel",
     "ResidentCandidate",

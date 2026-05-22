@@ -1,9 +1,4 @@
-"""Read-only resident listings for the frontend.
-
-Not how the agent reads residents — the agent uses `get_resident` (which is
-a fuzzy lookup with audit logging). This is a flat list for UI sidebars and
-debugging: "which residents am I working with?"
-"""
+"""Read-only resident listings for the frontend."""
 
 from __future__ import annotations
 

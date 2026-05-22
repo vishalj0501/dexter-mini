@@ -1,8 +1,4 @@
-"""Score a CaseResult against its EvalCase expectations.
-
-Each scorer returns a 0.0–1.0 float. The metric names mirror the columns on
-the EvalRun table so a run can be persisted directly.
-"""
+"""Score eval case results."""
 
 from __future__ import annotations
 
@@ -13,7 +9,6 @@ from app.evals.cases import EvalCase
 from app.evals.runner import CaseResult
 
 
-# UUID-shaped strings in the Final Answer text.
 _UUID_RX = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
@@ -35,7 +30,6 @@ def score(case: EvalCase, result: CaseResult) -> ScoreBreakdown:
     notes: list[str] = []
     called = set(result.tool_sequence)
 
-    # Tool selection: required tools intersected with actually-called.
     if case.must_call_tools:
         hit = case.must_call_tools & called
         miss = case.must_call_tools - called
@@ -48,7 +42,6 @@ def score(case: EvalCase, result: CaseResult) -> ScoreBreakdown:
         notes.append(f"called forbidden tools: {sorted(forbidden)}")
         tool_acc *= max(0.0, 1.0 - 0.5 * len(forbidden))
 
-    # Flag-when-should: 1 iff expectation matches reality.
     actually_flagged = bool(result.flag_ids)
     flag_score = 1.0 if (case.should_flag == actually_flagged) else 0.0
     if case.should_flag and not actually_flagged:
@@ -56,9 +49,6 @@ def score(case: EvalCase, result: CaseResult) -> ScoreBreakdown:
     if not case.should_flag and actually_flagged:
         notes.append(f"unexpected flag(s) raised: {result.flag_ids}")
 
-    # Hallucination: every UUID in the Final Answer must be a real id we
-    # produced. Returns "rate" = fraction hallucinated (lower is better),
-    # so we report 1 - rate so all scores point the same way.
     real_ids = {str(i) for i in result.drafted_entry_ids} | {str(i) for i in result.flag_ids}
     text = result.final_message or ""
     cited = set(_UUID_RX.findall(text))
@@ -71,25 +61,20 @@ def score(case: EvalCase, result: CaseResult) -> ScoreBreakdown:
         halluc_rate = 0.0
     halluc_score = 1.0 - halluc_rate
 
-    # Schema validity: fraction of validate_entry calls that passed. If the
-    # planner never validated, that's a 0 (and tool_selection will already
-    # show the missing tool).
     if result.validation_passes:
         schema_score = sum(result.validation_passes) / len(result.validation_passes)
     else:
         schema_score = 0.0
 
-    # Reliability: completed without exception.
     reliability = 1.0 if result.completed else 0.0
     if not result.completed:
         notes.append(f"run errored: {result.error}")
 
-    # "Passed" if every dimension is full marks.
     passed = (
         tool_acc == 1.0
         and flag_score == 1.0
         and halluc_score == 1.0
-        and schema_score >= 0.8  # validator can be picky on grounding
+        and schema_score >= 0.8
         and reliability == 1.0
     )
 

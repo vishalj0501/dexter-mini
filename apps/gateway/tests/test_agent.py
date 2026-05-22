@@ -1,9 +1,4 @@
-"""Tests for the agent layer (prompted ReAct graph).
-
-We use a `ScriptedClient` that returns a fixed sequence of LLM completions —
-text responses in ReAct format — so the agent's trajectory is deterministic
-and we never touch a real LLM provider.
-"""
+"""Tests for the agent layer."""
 
 from __future__ import annotations
 
@@ -39,11 +34,6 @@ from app.schemas.enums import EventStatus, Theme
 from tests.conftest import REQUEST_ID
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Parser
-# ────────────────────────────────────────────────────────────────────────────
-
-
 def test_parser_extracts_action():
     text = """\
 Thought: I need to resolve the resident first.
@@ -68,7 +58,7 @@ Final Answer: Documented Frau Müller's vitals and breakfast for today.
 
 
 def test_parser_tolerates_markdown_bolding():
-    """LLMs sometimes wrap keywords in **bold**. We strip those before matching."""
+    """Parses bolded ReAct keywords."""
     text = """\
 **Thought:** check vitals
 **Action:** check_vital_ranges
@@ -108,8 +98,7 @@ def test_parser_rejects_garbage():
 
 
 def test_parser_first_marker_wins_when_both_present():
-    """Generation order is truth — if Action comes first, the Final Answer
-    that follows is a hallucination and we treat the response as an Action."""
+    """Prefers the first ReAct marker."""
     text = """\
 Action: get_resident
 Action Input: {"name_or_id": "x"}
@@ -121,8 +110,7 @@ Final Answer: Already done.
 
 
 def test_parser_truncates_at_hallucinated_observation():
-    """Model wrote its own fake Observation and a Final Answer afterwards.
-    Both should be discarded; the Action before the Observation is what counts."""
+    """Ignores model-written Observation text."""
     text = """\
 Thought: I'll resolve the resident.
 Action: get_resident
@@ -134,11 +122,6 @@ Final Answer: Done.
     out = parse_react_output(text)
     assert isinstance(out, AgentAction)
     assert out.tool == "get_resident"
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Tool wrapper unit tests
-# ────────────────────────────────────────────────────────────────────────────
 
 
 async def test_tool_wrapper_resolves_resident(resident):
@@ -159,11 +142,6 @@ async def test_tool_wrapper_writes_audit_row(resident):
     rows = await AuditLog.all()
     assert any(r.request_id == REQUEST_ID and r.action == "tool.get_resident" for r in rows)
     assert any(r.actor == "nurse-x" for r in rows)
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Graph (with a scripted LLM client)
-# ────────────────────────────────────────────────────────────────────────────
 
 
 class ScriptedClient:
@@ -304,14 +282,8 @@ async def test_graph_handles_unknown_tool(resident):
     assert any("unknown_tool" in (m.content or "") for m in observations)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# interrupt() / resume — Day 4
-# ────────────────────────────────────────────────────────────────────────────
-
-
 async def test_ask_caregiver_interrupts_graph(resident, other_resident):
-    """Scripted: ambiguity-style scenario where the agent immediately asks.
-    The graph should pause with __interrupt__ set; no Final Answer yet."""
+    """Pauses the graph on caregiver questions."""
     client = ScriptedClient([
         """\
 Thought: two residents named Müller — disambiguate first.
@@ -328,22 +300,17 @@ Action Input: {"question": "Which Müller — Margarethe (room 12) or Hans (room
     assert interrupts, "graph should have paused on ask_caregiver"
     value = interrupts[0].value
     assert "Margarethe" in value["question"] and "Hans" in value["question"]
-    # The graph is NOT done — it's awaiting reply.
     assert state.get("done") is not True
 
 
 async def test_resume_continues_with_reply(resident, other_resident):
-    """Full pause/resume cycle. After interrupt, Command(resume=reply) should
-    feed the reply back as the tool's return value; planner sees it as
-    Observation and continues."""
+    """Continues the graph after a caregiver reply."""
     client = ScriptedClient([
-        # Turn 1: pause for clarification
         """\
 Thought: ambiguous — ask.
 Action: ask_caregiver
 Action Input: {"question": "Which Müller?"}
 """,
-        # Turn 2 (after resume): use the reply, finish.
         """\
 Thought: caregiver said Margarethe. Done for now.
 Final Answer: Got it — Margarethe Müller (room 12).
@@ -358,22 +325,15 @@ Final Answer: Got it — Margarethe Müller (room 12).
     )
     assert (first.get("__interrupt__") or []), "should pause first"
 
-    # Resume with the caregiver's reply.
     final = await graph.ainvoke(Command(resume="Margarethe"), config=config)
     assert final.get("done") is True
     assert "Margarethe" in final["final_answer"]
 
-    # The observation appended by ask_caregiver's tool wrapper carries the reply.
     obs_msgs = [
         m for m in final["messages"]
         if isinstance(m, HumanMessage) and "Observation" in (m.content or "")
     ]
     assert any("Margarethe" in (m.content or "") for m in obs_msgs)
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Stage 2 + 3 helpers (theme detection, stuck counting)
-# ────────────────────────────────────────────────────────────────────────────
 
 
 def test_expected_themes_detects_vitals_and_nutrition():
@@ -403,7 +363,6 @@ def test_consecutive_tool_calls_resets_at_draft():
         HumanMessage(content='Observation: {"flags": []}'),
         HumanMessage(content='Observation: {"events": []}'),
     ]
-    # Walking back: 2 non-draft, then a draft → stops at 2.
     assert _consecutive_tool_calls_without_draft(msgs) == 2
 
 
@@ -415,15 +374,8 @@ def test_consecutive_tool_calls_no_draft_seen():
     assert _consecutive_tool_calls_without_draft(msgs) == 2
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Stage 2 — reflection on Final Answer
-# ────────────────────────────────────────────────────────────────────────────
-
-
 async def test_reflection_rejects_when_themes_missing(resident):
-    """Transcript mentions vitals AND nutrition, but the script only drafts
-    vitals before claiming Final Answer. Reflection should reject the first
-    Final Answer; the second one (after drafting nutrition) is accepted."""
+    """Rejects a final answer when transcript themes are missing."""
     rid = str(resident.id)
     client = ScriptedClient([
         f'Thought: resolve.\nAction: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
@@ -433,9 +385,7 @@ async def test_reflection_rejects_when_themes_missing(resident):
             f'"content": {{"bp_systolic": 130, "bp_diastolic": 82}}, '
             f'"source_transcript": "BP 130/82"}}'
         ),
-        # First Final Answer — premature; reflection should reject (no nutrition).
         "Thought: done.\nFinal Answer: Documented vitals.",
-        # After reflection feedback, draft nutrition.
         (
             f'Thought: forgot nutrition.\nAction: draft_sis_entry\nAction Input: '
             f'{{"theme": "nutrition", "resident_id": "{rid}", '
@@ -454,7 +404,6 @@ async def test_reflection_rejects_when_themes_missing(resident):
     assert "vitals" in state["final_answer"].lower()
     assert "nutrition" in state["final_answer"].lower()
 
-    # Reflection injected a guidance message between the two Final Answers.
     reflect_msgs = [
         m for m in state["messages"]
         if isinstance(m, HumanMessage) and "REFLECTION CHECK" in (m.content or "")
@@ -468,8 +417,7 @@ async def test_reflection_rejects_when_themes_missing(resident):
 
 
 async def test_reflection_passes_when_all_themes_drafted(resident):
-    """Sanity check: if every transcript theme is drafted, Final Answer is
-    accepted on the first try without reflection feedback."""
+    """Accepts a final answer when all themes are drafted."""
     rid = str(resident.id)
     client = ScriptedClient([
         f'Thought: resolve.\nAction: get_resident\nAction Input: {{"name_or_id": "Müller"}}',
@@ -494,23 +442,14 @@ async def test_reflection_passes_when_all_themes_drafted(resident):
     assert not reflect_msgs
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Stage 2 — validator retry hints in observation
-# ────────────────────────────────────────────────────────────────────────────
-
-
 async def test_validator_retry_hint_added_on_failure(resident):
-    """A pre-seeded draft with content that doesn't match the transcript will
-    fail the heuristic validator. The tools_node should augment the observation
-    with `_retry_hint`."""
+    """Adds a retry hint after validation failure."""
     rid = str(resident.id)
     seed_config = {"configurable": {"request_id": "preseed", "actor": "agent"}}
     drafted = await draft_sis_entry_tool.ainvoke(
         {
             "theme": "vitals",
             "resident_id": rid,
-            # In-range BPs that do NOT appear in the transcript text below →
-            # heuristic scores zero grounding → validator fails.
             "content": {"bp_systolic": 145, "bp_diastolic": 92, "heart_rate": 78},
             "source_transcript": "no numbers here at all",
         },
@@ -526,9 +465,6 @@ async def test_validator_retry_hint_added_on_failure(resident):
         "Thought: stop here.\nFinal Answer: Stopped.",
     ])
     graph = _fresh_graph(client)
-    # Transcript is a query (no doc keywords) so anti-hallucination + reflection
-    # don't kick in; we just want to see the retry hint on the validate
-    # observation.
     state = await graph.ainvoke(
         {"messages": [HumanMessage("please validate that entry")]},
         config=_graph_config("t-retry", request_id="graph-retry"),
@@ -543,8 +479,7 @@ async def test_validator_retry_hint_added_on_failure(resident):
 
 
 async def test_validator_gives_up_after_two_failures(resident):
-    """Three consecutive failed validations on the same entry: the third one
-    should switch from _retry_hint to _give_up_hint."""
+    """Adds a give-up hint after repeated validation failures."""
     rid = str(resident.id)
     seed_config = {"configurable": {"request_id": "preseed", "actor": "agent"}}
     drafted = await draft_sis_entry_tool.ainvoke(
@@ -563,9 +498,9 @@ async def test_validator_gives_up_after_two_failures(resident):
         f'Action Input: {{"entry_id": "{entry_id}", "source_transcript": "no numbers here at all"}}'
     )
     client = ScriptedClient([
-        validate_step,  # failure 1 → _retry_hint
-        validate_step,  # failure 2 → _retry_hint
-        validate_step,  # failure 3 → _give_up_hint
+        validate_step,
+        validate_step,
+        validate_step,
         "Thought: ok stop.\nFinal Answer: Stopped.",
     ])
     graph = _fresh_graph(client)
@@ -583,14 +518,8 @@ async def test_validator_gives_up_after_two_failures(resident):
     assert giveup_hits == 1, f"expected 1 give-up hint, got {giveup_hits}: {obs_texts}"
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Stage 3 — stuck detection
-# ────────────────────────────────────────────────────────────────────────────
-
-
 async def test_stuck_hint_injected_after_many_non_draft_calls(resident):
-    """Six tool calls in a row, none of them draft_sis_entry, on a
-    documentation transcript → the 6th observation should carry _stuck_hint."""
+    """Adds a stuck hint after repeated non-draft tool calls."""
     rid = str(resident.id)
     lookup = lambda n=rid: f'Action: get_recent_notes\nAction Input: {{"resident_id": "{n}"}}'
     client = ScriptedClient([
@@ -603,7 +532,6 @@ async def test_stuck_hint_injected_after_many_non_draft_calls(resident):
         ),
         lookup(),
         lookup(),
-        # Finally a draft + finish so the run terminates without reflection bumps.
         (
             f'Action: draft_sis_entry\nAction Input: '
             f'{{"theme": "vitals", "resident_id": "{rid}", '
@@ -625,9 +553,7 @@ async def test_stuck_hint_injected_after_many_non_draft_calls(resident):
 
 
 async def test_stuck_hint_not_injected_on_query_transcript(resident):
-    """If the transcript is just a query (no doc keywords), stuck detection
-    stays quiet even with many tool calls — we don't pressure the agent into
-    drafting fictional documentation."""
+    """Skips stuck hints for query-only transcripts."""
     rid = str(resident.id)
     lookup = lambda: f'Action: get_recent_notes\nAction Input: {{"resident_id": "{rid}"}}'
     client = ScriptedClient([
@@ -653,9 +579,7 @@ async def test_stuck_hint_not_injected_on_query_transcript(resident):
 
 
 async def test_ask_caregiver_writes_audit_row_before_pausing(resident, other_resident):
-    """Even when the graph suspends, the audited workflow tool runs and
-    records the question. The audit row is the trace of 'we asked' even if
-    we haven't yet received the answer."""
+    """Writes audit rows before graph suspension."""
     client = ScriptedClient([
         """\
 Thought: ambiguous.

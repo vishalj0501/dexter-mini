@@ -1,18 +1,4 @@
-"""Care Gap Radar.
-
-Most agent flows are reactive: the caregiver speaks, the agent transcribes
-and validates. The radar is the proactive half — it scans the resident's
-care plan, recent care events, and today's drafts to surface unaddressed
-risks BEFORE the shift ends. The radar doesn't draft or flag on its own;
-it returns a structured list of gaps that the agent (or the UI) can act on.
-
-Gap kinds today:
-  - nutrition_pattern   — repeated refusals over the window
-  - missing_vital       — vitals taken yesterday, not measured today
-  - escalating_vital    — N readings trending in one direction
-  - plan_risk_unaddressed — care plan risk + a related event today, no flag raised
-  - overdue_followup    — an open Followup whose due_at has passed
-"""
+"""Care-gap detection tools."""
 
 from __future__ import annotations
 
@@ -31,8 +17,6 @@ from app.tools._errors import NotFoundError
 from app.tools._types import CareGap, CareGapReport
 
 
-# Plan-risk keyword → (theme, evidence keywords). When a risk is on the plan
-# AND today's events touch the related theme, we surface it if no flag exists.
 _RISK_THEME_MAP: dict[str, tuple[Theme, list[str]]] = {
     "fall_risk":       (Theme.MOBILITY,  ["walk", "walked", "alone", "unaccompanied", "supervis", "fell", "fall"]),
     "wandering_risk":  (Theme.MOBILITY,  ["walk", "corridor", "hallway", "alone", "lost"]),
@@ -69,7 +53,6 @@ async def _nutrition_pattern(resident_id: UUID, since: datetime) -> CareGap | No
                     "meal": meal.get("meal", "?"),
                     "at": ev.created_at.isoformat(),
                 })
-        # Also catch top-level appetite:"refused" / "poor".
         if str(content.get("appetite", "")).lower() in {"refused", "poor"}:
             refusals.append({
                 "entry_id": str(ev.id),
@@ -102,16 +85,15 @@ async def _missing_vital_today(resident_id: UUID, baseline: dict) -> CareGap | N
         resident_id=resident_id, theme=Theme.VITALS, created_at__gte=today_start,
     ).count()
     if today_vitals > 0:
-        return None  # already taken today
+        return None
 
     yesterday_vitals = await CareEvent.filter(
         resident_id=resident_id, theme=Theme.VITALS,
         created_at__gte=yesterday_start, created_at__lt=today_start,
     ).order_by("-created_at").all()
     if not yesterday_vitals:
-        return None  # nothing to compare against
+        return None
 
-    # Was anything elevated yesterday?
     elevated_evidence: list[dict] = []
     for ev in yesterday_vitals:
         content = ev.content or {}
@@ -167,8 +149,7 @@ async def _escalating_vitals(resident_id: UUID, since: datetime) -> CareGap | No
 async def _plan_risk_unaddressed(
     resident_id: UUID, since: datetime, plan: CarePlan | None,
 ) -> list[CareGap]:
-    """For each plan risk, check today's events for related content; surface
-    if a related event happened but no flag was raised."""
+    """Find plan risks touched by today's events without a review flag."""
     if plan is None or not plan.risk_flags:
         return []
     today_events = await CareEvent.filter(
@@ -186,7 +167,6 @@ async def _plan_risk_unaddressed(
         if mapping is None:
             continue
         theme, keywords = mapping
-        # Find events on the related theme that mention any keyword in transcript or content.
         related: list[dict] = []
         for ev in today_events:
             if _theme_str(ev.theme) != _theme_str(theme):
@@ -238,14 +218,7 @@ async def find_care_gaps(
     request_id: str,
     actor: str = "agent",
 ) -> CareGapReport:
-    """Scan a resident's recent history for unaddressed care items.
-
-    Call this AFTER drafting & validating today's events. The output is
-    advisory: it tells you what's still on the table, but doesn't act.
-    Use it to drive the Final Answer ('here's what's still open') or to
-    decide whether more tool calls are warranted (flag_for_review,
-    schedule_followup, ask_caregiver).
-    """
+    """Scan recent resident history for unaddressed care items."""
     resident = await Resident.get_or_none(id=resident_id)
     if resident is None:
         raise NotFoundError(f"resident {resident_id} not found")
@@ -263,7 +236,6 @@ async def find_care_gaps(
     gaps.extend(await _plan_risk_unaddressed(resident_id, since, plan))
     gaps.extend(await _overdue_followups(resident_id))
 
-    # Severity sort: high first, then watch, then info.
     order = {"high": 0, "watch": 1, "info": 2}
     gaps.sort(key=lambda g: order.get(g.severity, 9))
 

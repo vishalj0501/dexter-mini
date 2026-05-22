@@ -1,8 +1,4 @@
-"""Tests for app/llm/.
-
-We monkeypatch `litellm.acompletion` so no real API calls happen. The shape we
-mock matches LiteLLM's OpenAI-compatible response object.
-"""
+"""Tests for app/llm."""
 
 from __future__ import annotations
 
@@ -18,9 +14,6 @@ from app.llm.client import LiteLLMClient, ToolCall
 from app.llm.reliability import CircuitBreaker
 from app.models import AuditLog
 from tests.conftest import REQUEST_ID
-
-
-# ---------- helpers ----------
 
 
 def _mock_response(
@@ -67,9 +60,6 @@ def _make_client(primary="model-primary", fallback="model-fallback", breaker=Non
     )
 
 
-# ---------- plain chat ----------
-
-
 async def test_complete_plain_chat_returns_normalized_completion(monkeypatch):
     mock = AsyncMock(return_value=_mock_response(content="Hello there."))
     monkeypatch.setattr("app.llm.client.acompletion", mock)
@@ -105,9 +95,6 @@ async def test_complete_writes_audit_log(monkeypatch):
     assert row.cost_usd == 0.0001
 
 
-# ---------- tool calling ----------
-
-
 async def test_complete_parses_tool_calls(monkeypatch):
     response = _mock_response(
         content=None,
@@ -129,7 +116,6 @@ async def test_complete_parses_tool_calls(monkeypatch):
 
 
 async def test_complete_handles_malformed_tool_arguments(monkeypatch):
-    # LLM sometimes returns invalid JSON in tool args; we should not crash.
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(
             content=None,
@@ -147,9 +133,6 @@ async def test_complete_handles_malformed_tool_arguments(monkeypatch):
     client = _make_client()
     result = await client.complete([{"role": "user", "content": "?"}], request_id=REQUEST_ID)
     assert result.tool_calls[0].arguments == {"_raw": "{invalid json"}
-
-
-# ---------- failure paths ----------
 
 
 async def test_complete_propagates_error_and_audits_it(monkeypatch):
@@ -180,14 +163,10 @@ async def test_complete_rejects_both_response_model_and_tools(monkeypatch):
         )
 
 
-# ---------- circuit breaker ----------
-
-
 async def test_breaker_opens_after_threshold_failures_and_routes_to_fallback(monkeypatch):
     breaker = CircuitBreaker(failure_threshold=2, window_seconds=60, cooldown_seconds=300)
     client = _make_client(primary="p", fallback="f", breaker=breaker)
 
-    # Trip the breaker for the primary
     breaker.record_failure("p")
     breaker.record_failure("p")
     assert breaker.is_open("p") is True
@@ -201,8 +180,6 @@ async def test_breaker_opens_after_threshold_failures_and_routes_to_fallback(mon
     monkeypatch.setattr("app.llm.client.acompletion", fake)
 
     result = await client.complete([{"role": "user", "content": "?"}], request_id=REQUEST_ID)
-    # With breaker open on primary, the call goes straight to fallback as the new primary
-    # and there are no further fallbacks.
     assert captured["model"] == "f"
     assert captured["fallbacks"] is None
     assert result.model == "f"
@@ -218,23 +195,18 @@ async def test_breaker_success_clears_failure_state(monkeypatch):
 
 
 def test_breaker_cooldown_resets_after_window():
-    # Inject a tickable clock so we don't actually sleep.
     now = [0.0]
     breaker = CircuitBreaker(failure_threshold=2, window_seconds=60, cooldown_seconds=300, clock=lambda: now[0])
     breaker.record_failure("p")
     breaker.record_failure("p")
     assert breaker.is_open("p")
-    now[0] += 301  # past cooldown
+    now[0] += 301
     assert breaker.is_open("p") is False
-
-
-# ---------- router ----------
 
 
 def test_router_returns_role_specific_client(monkeypatch):
     monkeypatch.setenv("DEXTER_LLM_PLANNER", "test/primary-planner")
     monkeypatch.setenv("DEXTER_LLM_PLANNER_FALLBACK", "test/fallback-planner")
-    # Settings cache is module-level; force a reload of the settings + router.
     from app.llm import _settings as s_mod
     s_mod.llm_settings = s_mod.LLMSettings()
     from app.llm import router as r_mod

@@ -18,9 +18,6 @@ from app.tools.drafting import (
 from tests.conftest import REQUEST_ID
 
 
-# ---------- draft_sis_entry ----------
-
-
 async def test_draft_sis_entry_creates_draft(resident):
     result = await draft_sis_entry(
         Theme.VITALS,
@@ -41,7 +38,7 @@ async def test_draft_sis_entry_rejects_bad_schema(resident):
         await draft_sis_entry(
             Theme.VITALS,
             resident.id,
-            {"bp_systolic": 999},  # exceeds 260 ceiling
+            {"bp_systolic": 999},
             "",
             request_id=REQUEST_ID,
         )
@@ -53,9 +50,6 @@ async def test_draft_sis_entry_unknown_resident():
             Theme.VITALS, uuid.uuid4(), {"bp_systolic": 120}, "",
             request_id=REQUEST_ID,
         )
-
-
-# ---------- validate_entry ----------
 
 
 async def test_validate_entry_grounded_passes(resident):
@@ -80,7 +74,7 @@ async def test_validate_entry_ungrounded_fails_and_flips_status(resident):
         Theme.VITALS,
         resident.id,
         {"bp_systolic": 200, "bp_diastolic": 110, "heart_rate": 130},
-        "She slept well.",  # no numbers
+        "She slept well.",
         request_id=REQUEST_ID,
     )
     result = await validate_entry(
@@ -89,7 +83,6 @@ async def test_validate_entry_ungrounded_fails_and_flips_status(resident):
         request_id=REQUEST_ID,
     )
     assert result.passed is False
-    # status should flip to NEEDS_REVIEW
     entry = await CareEvent.get(id=drafted.entry_id)
     assert entry.status == EventStatus.NEEDS_REVIEW
     assert entry.validator_confidence is not None
@@ -98,9 +91,6 @@ async def test_validate_entry_ungrounded_fails_and_flips_status(resident):
 async def test_validate_entry_unknown():
     with pytest.raises(NotFoundError):
         await validate_entry(uuid.uuid4(), "", request_id=REQUEST_ID)
-
-
-# ---------- synthesize_summary ----------
 
 
 async def test_synthesize_summary_combines_themes(resident):
@@ -130,9 +120,6 @@ async def test_synthesize_summary_empty():
     assert summary.paragraphs == []
 
 
-# ---------- redact_pii ----------
-
-
 async def test_redact_pii_replaces_known_names(resident):
     result = await redact_pii(
         "Margarethe seemed tired today; Mrs. Müller refused breakfast.",
@@ -140,7 +127,7 @@ async def test_redact_pii_replaces_known_names(resident):
     )
     assert "Margarethe" not in result.redacted_text
     assert "Müller" not in result.redacted_text
-    assert result.mapping  # at least one token
+    assert result.mapping
 
 
 async def test_redact_pii_with_extra_names():

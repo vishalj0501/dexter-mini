@@ -1,15 +1,4 @@
-"""Eval harness CLI.
-
-Usage:
-    uv run python -m app.evals                       # default planner, all cases
-    uv run python -m app.evals --case muller-elevated-bp-and-refusal
-    uv run python -m app.evals --providers replicate/anthropic/claude-4.5-sonnet,replicate/openai/gpt-4o
-    uv run python -m app.evals --no-persist          # don't write EvalRun rows
-
-By default uses an in-memory SQLite seeded fresh, so the harness needs no
-docker. Override with DATABASE_URL to point at the real Postgres if you want
-the EvalRun rows to land in your dev DB.
-"""
+"""Eval harness CLI."""
 
 from __future__ import annotations
 
@@ -63,12 +52,7 @@ def _git_sha() -> str | None:
 
 
 def _build_client(planner_model: str | None) -> LiteLLMClient:
-    """Return the planner client, with an optional model override.
-
-    Reassigns the module-level `llm_settings` so `get_client("planner")`
-    picks up the new model on next construction. Clears the lru cache so
-    the next call rebuilds with fresh config.
-    """
+    """Return the planner client, optionally overriding the model."""
     if planner_model:
         os.environ["DEXTER_LLM_PLANNER"] = planner_model
         _llm_settings.llm_settings = LLMSettings()
@@ -142,7 +126,7 @@ async def _persist_run(
         config={"provider": provider, "case_count": len(cases)},
         tool_selection_accuracy=agg.get("tool_selection_accuracy"),
         flagged_when_should_have=agg.get("flagged_when_should_have"),
-        hallucination_rate=1.0 - agg.get("hallucination_rate", 1.0),  # store as fraction-fake
+        hallucination_rate=1.0 - agg.get("hallucination_rate", 1.0),
         schema_validity_rate=agg.get("schema_validity_rate"),
         reliability_rate=agg.get("reliability_rate"),
         cost_usd=sum(costs),

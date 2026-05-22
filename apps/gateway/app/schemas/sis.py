@@ -1,9 +1,4 @@
-"""SIS-aligned Pydantic schemas.
-
-These are the structured-output targets for the agent's extraction step
-and the reference shape that the validator agent enforces against the
-source transcript.
-"""
+"""SIS-aligned Pydantic schemas."""
 
 from datetime import datetime
 

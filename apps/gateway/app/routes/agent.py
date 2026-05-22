@@ -1,13 +1,4 @@
-"""Agent endpoints — Day 4 (interrupt + resume).
-
-`POST /agent/run` accepts a transcript and runs the agent until it either
-finishes (status="complete") OR hits an `ask_caregiver` interrupt
-(status="awaiting_caregiver"). The response carries a `thread_id` that the
-client uses to resume.
-
-`POST /agent/resume` accepts the user's reply for an outstanding question
-and continues the agent from where it paused. Returns the same shape.
-"""
+"""Agent endpoints for interruptible runs and resume."""
 
 from __future__ import annotations
 
@@ -25,11 +16,6 @@ from app.obs.middleware import get_request_id
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/agent", tags=["agent"])
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Request / response models
-# ────────────────────────────────────────────────────────────────────────────
 
 
 class AgentRunRequest(BaseModel):
@@ -82,7 +68,6 @@ async def resume_agent(req: AgentResumeRequest, request: Request) -> AgentTrace:
     config = _build_config(thread_id=req.thread_id, request_id=request_id, actor=req.actor, recursion_limit=req.recursion_limit)
     graph = get_default_graph()
 
-    # Validate the thread exists and is genuinely paused on an interrupt.
     snapshot = await graph.aget_state(config)
     if snapshot is None or snapshot.created_at is None:
         raise HTTPException(status_code=404, detail=f"unknown thread_id {req.thread_id!r}")
@@ -109,12 +94,9 @@ def _build_config(*, thread_id: str, request_id: str, actor: str, recursion_limi
 
 
 def _to_trace(state: dict[str, Any], *, request_id: str, thread_id: str) -> AgentTrace:
-    # Interrupts surface in the state dict under the "__interrupt__" key.
     interrupts = state.get("__interrupt__") or []
     if interrupts:
-        # We only ever raise one interrupt at a time (ask_caregiver).
         i = interrupts[0]
-        # `value` is whatever we passed to interrupt(); shape: {question, context}
         val = getattr(i, "value", None) or {}
         return AgentTrace(
             status="awaiting_caregiver",
@@ -141,15 +123,7 @@ def _to_trace(state: dict[str, Any], *, request_id: str, thread_id: str) -> Agen
 
 
 def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
-    """Walk message history and pull out the parsed actions paired with
-    their observations.
-
-    For Day 4 we re-parse the AIMessage content (ReAct text) rather than
-    rely on .tool_calls — Replicate doesn't emit those. We then look at the
-    immediately-following HumanMessage for the `Observation:` JSON and
-    attach it as `output` so the UI can render tool results (e.g. the Care
-    Gap Radar) without an extra round trip.
-    """
+    """Extract parsed tool actions and observations from message history."""
     import json
 
     from app.agent.react_parser import AgentAction, parse_react_output
@@ -165,7 +139,6 @@ def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
         if not isinstance(parsed, AgentAction):
             continue
         output: Any = None
-        # The graph emits Observation as the next HumanMessage.
         if i + 1 < len(messages):
             nxt = messages[i + 1]
             text = getattr(nxt, "content", "") or ""

@@ -1,10 +1,4 @@
-"""Test setup: fresh in-memory SQLite per test, plus a minimal resident factory.
-
-We pick SQLite (not Postgres) for unit tests so a developer can run the suite
-in <2 seconds without docker. The tools themselves don't use any
-Postgres-specific features at this layer — Tortoise abstracts JSON and enums.
-Integration tests against real Postgres will land later when CI is wired up.
-"""
+"""Test setup and resident fixtures."""
 
 from __future__ import annotations
 
@@ -15,9 +9,6 @@ import pytest_asyncio
 from tortoise import Tortoise
 
 from app.models import CarePlan, Resident
-from app.schemas.enums import FlagSeverity  # noqa: F401  (re-exported for tests)
-
-
 TEST_CONFIG = {
     "connections": {"default": "sqlite://:memory:"},
     "apps": {
@@ -71,7 +62,7 @@ async def other_resident() -> Resident:
     r = await Resident.create(
         id=uuid.uuid4(),
         first_name="Hans",
-        last_name="Müller",  # Same surname → ambiguity scenario
+        last_name="Müller",
         room_number="14",
         date_of_birth=date(1940, 9, 3),
         admitted_at=date(2024, 3, 1),

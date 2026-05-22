@@ -1,9 +1,4 @@
-"""Drafting tools — turn caregiver speech into structured SIS entries.
-
-The two LLM-touching tools (`validate_entry`, `synthesize_summary`) ship with
-deterministic heuristic implementations today so the agent loop is exercisable
-end-to-end on Day 2. Day 3 swaps in real LLM calls behind the same signatures.
-"""
+"""Drafting tools for structured SIS entries."""
 
 from __future__ import annotations
 
@@ -84,10 +79,7 @@ def _transcript_numbers(text: str) -> list[float]:
 
 
 def _ground_numeric(value: float, transcript_numbers: list[float]) -> float:
-    """Confidence that `value` is grounded in transcript numbers.
-
-    Exact match → 1.0; within 5% → 0.7; within 10% → 0.4; otherwise 0.0.
-    """
+    """Score whether a value appears in transcript numbers."""
     if not transcript_numbers:
         return 0.0
     best = 0.0
@@ -157,11 +149,7 @@ async def validate_entry(
     request_id: str,
     actor: str = "agent",
 ) -> ValidationResult:
-    """Check whether the entry's filled fields are grounded in the transcript.
-
-    Day-2 implementation: heuristic. Day 3 replaces the per-field check with an
-    LLM judge call. The result shape stays the same.
-    """
+    """Check whether entry fields are grounded in the transcript."""
     entry = await CareEvent.get_or_none(id=entry_id)
     if entry is None:
         raise NotFoundError(f"entry {entry_id} not found")
@@ -320,11 +308,7 @@ async def synthesize_summary(
     request_id: str,
     actor: str = "agent",
 ) -> NarrativeSummary:
-    """Render confirmed drafts as a multi-paragraph SIS narrative.
-
-    Day-2 implementation: template strings per theme. Day 3 wraps this output
-    in an LLM rewrite for clinical tone.
-    """
+    """Render confirmed drafts as a SIS narrative."""
     if not entry_ids:
         return NarrativeSummary(entry_ids=[], headline="No entries to summarise.", paragraphs=[])
 
@@ -347,9 +331,6 @@ async def synthesize_summary(
 
 
 
-# `redact_pii` is a pure-ish helper — it audit-logs but doesn't mutate the DB,
-# and the agent uses it before sending text to cloud-hosted LLMs. The mapping
-# stays on this side of the wire so we can rehydrate locally.
 @audited(AuditAction.REDACT_PII)
 async def redact_pii(
     text: str,
@@ -367,7 +348,6 @@ async def redact_pii(
             names.add(r.first_name)
         if r.last_name:
             names.add(r.last_name)
-    # Longest first so "Maria Müller" wins over "Maria".
     ordered = sorted((n for n in names if n), key=len, reverse=True)
 
     mapping: dict[str, str] = {}

@@ -1,10 +1,4 @@
-"""Workflow tools — agent actions that change the world.
-
-These are the tools that turn the agent from a transcriber into a participant:
-asking the caregiver a clarifying question, raising a flag for the care
-manager, scheduling a follow-up, finalising an entry the caregiver confirmed,
-and surfacing what's still missing this shift.
-"""
+"""Workflow tools for caregiver questions, flags, follow-ups, and finalization."""
 
 from __future__ import annotations
 
@@ -41,12 +35,7 @@ async def ask_caregiver(
     actor: str = "agent",
     context: dict[str, Any] | None = None,
 ) -> PendingQuestion:
-    """Surface a clarifying question.
-
-    Day-2 contract: return a `PendingQuestion` and record the ask in the audit
-    log. Day 4 wraps this call site with LangGraph's `interrupt()` so the loop
-    pauses for the caregiver's answer; the tool body stays the same.
-    """
+    """Surface a clarifying question."""
     question = question.strip()
     if not question:
         raise InvalidStateError("ask_caregiver requires a non-empty question")
@@ -127,12 +116,7 @@ async def finalize_entry(
     request_id: str,
     actor: str = "agent",
 ) -> FinalizeResult:
-    """Commit a draft entry to the permanent record.
-
-    Requires `confirmed_by` — the agent cannot finalise on its own; the upstream
-    request must carry the signing nurse's identity. This is the bounded-autonomy
-    contract enforced at the tool layer.
-    """
+    """Commit a human-confirmed draft entry to the permanent record."""
     if not confirmed_by or not confirmed_by.strip():
         raise InvalidStateError("finalize_entry requires confirmed_by (signing identity)")
     entry = await CareEvent.get_or_none(id=entry_id)
@@ -158,17 +142,11 @@ async def list_pending_documentation(
     actor: str = "agent",
     window_hours: int = 8,
 ) -> PendingList:
-    """Residents who have no final care event in the last `window_hours`.
-
-    `shift_id` is accepted for forward compatibility (a Shift table lands in
-    Day 6 when the time-blocked task list ships); for now we use a rolling
-    window which matches the way the agent reasons about "this shift."
-    """
+    """List residents with no recent final care event."""
     if window_hours < 1:
         window_hours = 1
     cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
 
-    # last final event per resident, in one query
     rows = (
         await CareEvent.filter(status=EventStatus.FINAL)
         .annotate(last_final=Max("created_at"))

@@ -20,9 +20,6 @@ from app.tools.workflow import (
 from tests.conftest import REQUEST_ID, utcnow
 
 
-# ---------- ask_caregiver ----------
-
-
 async def test_ask_caregiver_returns_question():
     result = await ask_caregiver(
         "Did you measure BP today?",
@@ -37,9 +34,6 @@ async def test_ask_caregiver_returns_question():
 async def test_ask_caregiver_empty_rejected():
     with pytest.raises(InvalidStateError):
         await ask_caregiver("   ", request_id=REQUEST_ID)
-
-
-# ---------- flag_for_review ----------
 
 
 async def test_flag_for_review_creates_row(resident):
@@ -63,9 +57,6 @@ async def test_flag_for_review_empty_reason(resident):
 async def test_flag_for_review_unknown_resident():
     with pytest.raises(NotFoundError):
         await flag_for_review(uuid.uuid4(), "reason", request_id=REQUEST_ID)
-
-
-# ---------- schedule_followup ----------
 
 
 async def test_schedule_followup_creates_row(resident):
@@ -93,9 +84,6 @@ async def test_schedule_followup_unknown_resident():
         await schedule_followup(
             uuid.uuid4(), "action", when=utcnow(), request_id=REQUEST_ID,
         )
-
-
-# ---------- finalize_entry ----------
 
 
 async def test_finalize_entry_transitions_draft_to_final(resident):
@@ -142,11 +130,7 @@ async def test_finalize_entry_unknown():
         await finalize_entry(uuid.uuid4(), confirmed_by="x", request_id=REQUEST_ID)
 
 
-# ---------- list_pending_documentation ----------
-
-
 async def test_pending_documentation_lists_undocumented(resident, other_resident):
-    # resident has a recent FINAL event; other_resident has none.
     await CareEvent.create(
         resident=resident, theme=Theme.VITALS, content={},
         source_transcript="", status=EventStatus.FINAL,
@@ -159,7 +143,6 @@ async def test_pending_documentation_lists_undocumented(resident, other_resident
 
 
 async def test_pending_documentation_includes_stale(resident):
-    # An old event outside the window → resident is pending again.
     await CareEvent.create(
         resident=resident, theme=Theme.VITALS, content={},
         source_transcript="", status=EventStatus.FINAL,
@@ -172,7 +155,6 @@ async def test_pending_documentation_includes_stale(resident):
 
 
 async def test_pending_documentation_draft_does_not_count(resident):
-    # A DRAFT event does not satisfy "documented" — final is the bar.
     await CareEvent.create(
         resident=resident, theme=Theme.VITALS, content={},
         source_transcript="", status=EventStatus.DRAFT,

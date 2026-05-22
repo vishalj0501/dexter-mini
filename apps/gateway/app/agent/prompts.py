@@ -1,11 +1,4 @@
-"""System prompt for the shift-copilot agent.
-
-Day 3 uses **prompted ReAct** because Replicate (our default LLM host) doesn't
-support OpenAI's native function-calling API. We instruct the model to emit
-text in a fixed `Thought / Action / Action Input` format and parse that into
-real tool calls — same trajectory, same audit log, different I/O contract
-with the model.
-"""
+"""System prompt for the shift-copilot agent."""
 
 from __future__ import annotations
 
@@ -207,18 +200,10 @@ RULES
 
 
 def render_tool_catalog(tools: Iterable) -> str:
-    """Render the @tool list as a text catalog for the prompt.
-
-    For each tool: name, one-line description (first paragraph of docstring),
-    and its parameter schema. The model sees this once per call site and uses
-    it as the only contract for what's callable.
-    """
+    """Render the tool catalog for the prompt."""
     blocks: list[str] = []
     for t in tools:
-        # `t.description` is the @tool-extracted docstring; .args is the
-        # JSON Schema properties dict.
         desc = (t.description or "").strip()
-        # Use the args schema; trim verbose schema noise.
         schema = (t.args_schema.model_json_schema()
                   if getattr(t, "args_schema", None) else {})
         props = schema.get("properties", {})
@@ -246,8 +231,6 @@ def build_system_prompt(tools: Iterable) -> str:
     )
 
 
-# Back-compat alias for any code still importing SYSTEM_PROMPT directly —
-# build with the default tool catalog.
 def _default_prompt() -> str:
     from app.agent.llm_tools import ALL_TOOLS
     return build_system_prompt(ALL_TOOLS)

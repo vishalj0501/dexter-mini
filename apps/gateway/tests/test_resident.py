@@ -19,9 +19,6 @@ from app.tools.resident import (
 from tests.conftest import REQUEST_ID, utcnow
 
 
-# ---------- get_resident ----------
-
-
 async def test_get_resident_resolves_by_exact_surname(resident):
     result = await get_resident("Müller", request_id=REQUEST_ID)
     assert result.status == "resolved"
@@ -66,9 +63,6 @@ async def test_get_resident_writes_audit(resident):
     assert rows[0].payload["status"] == "ok"
 
 
-# ---------- get_resident.recent_activity ----------
-
-
 async def test_resolved_includes_empty_recent_activity_when_no_history(resident):
     result = await get_resident("Müller", request_id=REQUEST_ID)
     assert result.status == "resolved"
@@ -82,8 +76,7 @@ async def test_resolved_includes_empty_recent_activity_when_no_history(resident)
 
 
 async def test_resolved_recent_activity_counts_24h_events(resident):
-    """Three events: two within 24h, one older. Only the two should count, and
-    distinct themes should be returned newest-first."""
+    """Counts recent activity by theme."""
     now = utcnow()
     await CareEvent.create(
         resident=resident, theme=Theme.VITALS, content={"bp_systolic": 140},
@@ -104,7 +97,7 @@ async def test_resolved_recent_activity_counts_24h_events(resident):
     result = await get_resident("Müller", request_id=REQUEST_ID)
     ra = result.recent_activity
     assert ra.count_24h == 2
-    assert ra.themes_seen_24h == ["vitals", "nutrition"]  # newest-first, deduped
+    assert ra.themes_seen_24h == ["vitals", "nutrition"]
     assert ra.last_event_at is not None
 
 
@@ -139,7 +132,7 @@ async def test_resolved_recent_activity_counts_open_flags_and_followups(resident
 
 
 async def test_ambiguous_has_no_recent_activity(resident, other_resident):
-    """Ambiguous resolutions don't pick a resident, so no history snapshot."""
+    """Ambiguous resolutions omit history."""
     result = await get_resident("Müller", request_id=REQUEST_ID)
     assert result.status == "ambiguous"
     assert result.recent_activity is None
@@ -149,9 +142,6 @@ async def test_not_found_has_no_recent_activity(resident):
     result = await get_resident("Nobody", request_id=REQUEST_ID)
     assert result.status == "not_found"
     assert result.recent_activity is None
-
-
-# ---------- get_recent_notes ----------
 
 
 async def test_get_recent_notes_orders_newest_first(resident):
@@ -168,7 +158,7 @@ async def test_get_recent_notes_orders_newest_first(resident):
 
     result = await get_recent_notes(resident.id, days=7, request_id=REQUEST_ID)
     assert len(result.events) == 2
-    assert result.events[0].theme == Theme.NUTRITION  # newest first
+    assert result.events[0].theme == Theme.NUTRITION
 
 
 async def test_get_recent_notes_window_excludes_old(resident):
@@ -186,9 +176,6 @@ async def test_get_recent_notes_unknown_resident_raises():
         await get_recent_notes(uuid.uuid4(), request_id=REQUEST_ID)
 
 
-# ---------- search_care_plan ----------
-
-
 async def test_search_care_plan_returns_active_plan(resident):
     snap = await search_care_plan(resident.id, request_id=REQUEST_ID)
     assert snap.has_plan is True
@@ -197,7 +184,6 @@ async def test_search_care_plan_returns_active_plan(resident):
 
 
 async def test_search_care_plan_no_plan(other_resident):
-    # other_resident has an empty plan (still active); has_plan = True
     snap = await search_care_plan(other_resident.id, request_id=REQUEST_ID)
     assert snap.has_plan is True
     assert snap.goals == []
@@ -206,9 +192,6 @@ async def test_search_care_plan_no_plan(other_resident):
 async def test_search_care_plan_unknown_resident():
     with pytest.raises(NotFoundError):
         await search_care_plan(uuid.uuid4(), request_id=REQUEST_ID)
-
-
-# ---------- check_vital_ranges ----------
 
 
 async def test_check_vital_ranges_normal(resident):
@@ -243,8 +226,6 @@ async def test_check_vital_ranges_critical_o2(resident):
 
 
 async def test_check_vital_ranges_baseline_delta(resident):
-    # baseline systolic is 130 → 165 is 27% delta → triggers baseline-delta flag,
-    # and 165 is also above warn band → so we get a warn flag.
     result = await check_vital_ranges(
         resident.id,
         vitals={"bp_systolic": 165},

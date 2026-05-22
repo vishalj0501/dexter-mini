@@ -1,19 +1,4 @@
-"""Per-model circuit breaker.
-
-LiteLLM already handles per-call retries, fallback, and timeout. This layer
-sits one step above: if a model has been failing recently, keep it *out* of
-the rotation entirely for a cooldown period so we don't burn latency every
-request waiting for retries on a known-sick provider.
-
-Semantics:
-  - Closed (normal): all calls go primary → fallback.
-  - Open: primary is bypassed; the call goes straight to the fallback for the
-    next `cooldown_seconds`. After cooldown, the breaker resets to closed and
-    primary is tried again.
-
-The breaker is in-memory and per-process — fine for one gateway instance,
-which is the deploy target. A multi-instance setup would back it with Redis.
-"""
+"""Per-model circuit breaker."""
 
 from __future__ import annotations
 

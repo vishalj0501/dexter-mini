@@ -1,10 +1,4 @@
-"""Golden set of caregiver scenarios.
-
-Each case names a seeded resident (so the agent must resolve them via
-get_resident) and the trajectory shape we expect. Keep transcripts terse and
-in caregiver English — the agent's first guard already handles language
-detection separately.
-"""
+"""Golden set of caregiver scenarios."""
 
 from __future__ import annotations
 
@@ -16,17 +10,13 @@ class EvalCase:
     id: str
     transcript: str
 
-    # Trajectory expectations
     expected_resident_surname: str
     expected_themes: set[str] = field(default_factory=set)
-    must_call_tools: set[str] = field(default_factory=set)  # subset that MUST appear
+    must_call_tools: set[str] = field(default_factory=set)
     must_not_call_tools: set[str] = field(default_factory=set)
 
-    # Outcome expectations
     should_flag: bool = False
     should_ask_caregiver: bool = False
-    # The Final Answer must NOT reference any flag/entry id not present in
-    # observations. Always checked; this is just an explicit marker.
     no_hallucinated_ids: bool = True
 
 
@@ -72,7 +62,7 @@ GOLDEN_SET: list[EvalCase] = [
             "get_resident", "search_care_plan", "draft_sis_entry",
             "validate_entry", "flag_for_review",
         },
-        should_flag=True,  # wandering_risk + fall_risk on plan
+        should_flag=True,
     ),
     EvalCase(
         id="schmidt-normal-routine",
@@ -100,6 +90,6 @@ GOLDEN_SET: list[EvalCase] = [
             "get_resident", "search_care_plan", "check_vital_ranges",
             "draft_sis_entry", "validate_entry", "flag_for_review",
         },
-        should_flag=True,  # critical BP + CHF/hypertension on plan
+        should_flag=True,
     ),
 ]

@@ -1,7 +1,4 @@
-"""Seed eight demo residents with care plans and seven days of historical events.
-
-Idempotent: a no-op if residents already exist.
-"""
+"""Seed demo residents with care plans and historical events."""
 
 import logging
 import random
@@ -153,7 +150,7 @@ async def seed_if_empty() -> None:
 
 
 async def _seed_history(resident: Resident) -> None:
-    """Seven days of plausible vitals and a handful of nutrition notes per resident."""
+    """Seed vitals and nutrition history for one resident."""
     now = datetime.now(timezone.utc)
     rng = random.Random(str(resident.id))
     baseline = resident.baseline_vitals or {}

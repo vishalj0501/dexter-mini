@@ -1,7 +1,4 @@
-"""Per-run debug endpoint: every audit row, every draft, every flag, every
-follow-up touched by a specific request_id. Lets the frontend show the agent's
-actual DB writes, not just the parsed text actions it claimed.
-"""
+"""Per-run debug endpoint."""
 
 from __future__ import annotations
 

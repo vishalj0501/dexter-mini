@@ -1,10 +1,4 @@
-"""Voice → text endpoint.
-
-Accepts a multipart audio blob from the caregiver console, ships it to
-Replicate's hosted Whisper, and returns the plain transcript. The transcript
-is then handed back to the existing `/agent/run` flow — there's no special
-"voice mode" in the agent; the model only ever sees text.
-"""
+"""Voice-to-text endpoint."""
 
 from __future__ import annotations
 
@@ -22,8 +16,6 @@ log = logging.getLogger(__name__)
 router = APIRouter(tags=["transcribe"])
 
 
-# openai/whisper on Replicate — pinned to a known-good version. Output shape:
-# {"transcription": "...", "segments": [...], "detected_language": "..."}.
 _WHISPER_VERSION = (
     "8099696689d249cf8b122d833c36ac3f75505c666a395ca40ef26f68e7d3d16e"
 )
@@ -55,9 +47,6 @@ async def transcribe(audio: UploadFile = File(...)) -> TranscribeResponse:
     headers = {"Authorization": f"Token {token}", "Content-Type": "application/json"}
     payload = {
         "version": _WHISPER_VERSION,
-        # large-v3 is the highest-quality whisper variant Replicate exposes.
-        # `translate=false` keeps the original language; transcript can be
-        # German even though the planner prompt is English.
         "input": {"audio": data_uri, "model": "large-v3", "translate": False},
     }
 

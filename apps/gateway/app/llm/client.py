@@ -1,19 +1,4 @@
-"""Provider-agnostic LLM client.
-
-Everything that talks to a model goes through `LLMClient.complete(...)`. The
-concrete implementation today is `LiteLLMClient`, which lets us hit any
-LiteLLM-supported provider — Replicate by default for this account, but
-swap the model string and we're on OpenAI / Anthropic / OpenRouter / vLLM /
-anything else LiteLLM understands. That is the "not tied to one specific
-provider" point from SPEC §6b, made literal.
-
-Three things this client guarantees no matter the underlying provider:
-  1. A normalized `Completion` shape — text, tool calls, usage, cost,
-     latency, model that actually answered (post-fallback).
-  2. A row in `audit_log` per invocation, indexed by `request_id`, so the
-     LLM side of a trajectory joins to the tool side in SQL.
-  3. Reliability knobs (retries, timeout, fallback) applied uniformly.
-"""
+"""Provider-agnostic LLM client."""
 
 from __future__ import annotations
 
@@ -21,7 +6,7 @@ import json
 import logging
 import time
 from typing import Any, Protocol
-from uuid import UUID  # noqa: F401  (used implicitly via type hints)
+from uuid import UUID
 
 import litellm
 from litellm import acompletion
@@ -46,10 +31,7 @@ litellm.suppress_debug_info = True
 
 
 def _enable_langfuse_callback_once() -> None:
-    """Wire LangFuse as a LiteLLM success/failure callback when env is set.
-
-    Idempotent — safe to call from multiple entry points.
-    """
+    """Enable LangFuse callbacks when configured."""
     if not langfuse_settings.enabled:
         return
     callbacks = set(litellm.success_callback or [])
@@ -65,7 +47,7 @@ _enable_langfuse_callback_once()
 
 
 class Message(BaseModel):
-    role: str  # "system" | "user" | "assistant" | "tool"
+    role: str
     content: str | None = None
     tool_call_id: str | None = None
     name: str | None = None
@@ -86,12 +68,12 @@ class Usage(BaseModel):
 class Completion(BaseModel):
     content: str | None = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
-    parsed: Any | None = None  # set when response_model was used
-    model: str  # the model that actually answered (post-fallback)
+    parsed: Any | None = None
+    model: str
     usage: Usage = Field(default_factory=Usage)
     cost_usd: float | None = None
     latency_ms: int = 0
-    role: str  # planner | extractor | judge
+    role: str
 
 
 class LLMClient(Protocol):
@@ -170,7 +152,6 @@ class LiteLLMClient:
             await self._audit(request_id, actor, payload, started=start)
             raise
 
-        # Success on the model that actually answered (may be the fallback).
         self.breaker.record_success(completion.model)
         completion.latency_ms = int((time.perf_counter() - start) * 1000)
         completion.role = self.role
@@ -228,7 +209,7 @@ class LiteLLMClient:
         metadata: dict[str, Any] | None,
     ) -> Completion:
         """Structured output via Instructor — parse + retry-on-validation-failure."""
-        import instructor  # local import keeps cold-start cheap when unused
+        import instructor
 
         client = instructor.from_litellm(acompletion)
         primary = model_list[0]
@@ -250,13 +231,7 @@ class LiteLLMClient:
         return completion
 
     def _langfuse_metadata(self, request_id: str, actor: str) -> dict[str, Any]:
-        """Metadata LiteLLM forwards to LangFuse.
-
-        `trace_id` groups multiple generations (each `complete()` call) under
-        one trace in the UI; using `request_id` makes the trace joinable to
-        our audit_log rows. `generation_name` distinguishes planner/extractor/
-        judge calls within the same trace.
-        """
+        """Build LangFuse metadata for a generation."""
         return {
             "trace_id": request_id,
             "trace_name": f"agent-run/{request_id}",

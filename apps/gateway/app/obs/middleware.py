@@ -1,13 +1,4 @@
-"""Request-ID middleware.
-
-Reads `X-Request-Id` from the inbound request (or generates a fresh UUID),
-stamps it onto `request.state.request_id`, and echoes it back to the client
-in the same header. Routes pull it via `request.state.request_id` and
-forward it into the agent + tools — that single id then threads through the
-audit_log, the LLM call rows, and (later) LangFuse trace ids.
-
-One ID, three systems, queryable across all of them — see SPEC §6c.
-"""
+"""Request-ID middleware."""
 
 from __future__ import annotations
 
@@ -35,11 +26,9 @@ class RequestIDMiddleware(BaseHTTPMiddleware):
 
 
 def get_request_id(request: Request) -> str:
-    """Helper for route handlers: fetch the middleware-stamped id."""
+    """Fetch the middleware-stamped request id."""
     rid = getattr(request.state, "request_id", None)
     if not rid:
-        # Middleware not installed — degrade to a fresh id so the request
-        # is still observable (just not joinable to anything upstream).
         rid = f"req-{uuid4().hex[:12]}"
         request.state.request_id = rid
     return rid

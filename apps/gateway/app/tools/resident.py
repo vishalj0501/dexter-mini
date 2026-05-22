@@ -1,8 +1,4 @@
-"""Read-only resident tools.
-
-Resolving who the caregiver is talking about, and what we already know about
-them, is everything. These four tools are the agent's eyes.
-"""
+"""Read-only resident lookup and context tools."""
 
 from __future__ import annotations
 
@@ -19,7 +15,6 @@ from app.tools._errors import NotFoundError
 from app.tools._types import (
     CareEventSummary,
     CarePlanSnapshot,
-    PendingResident,  # noqa: F401  (kept for symmetry with type module)
     RecentActivity,
     RecentNotes,
     ResidentCandidate,
@@ -34,12 +29,7 @@ def _candidate(r: Resident) -> ResidentCandidate:
 
 
 async def _recent_activity(resident_id: UUID) -> RecentActivity:
-    """24h activity snapshot. One indexed query each across three tables.
-
-    Cheap (<5ms in practice) and ships in the FIRST observation the agent
-    sees — so 'this resident has open business' is no longer something the
-    planner has to remember to ask about.
-    """
+    """Build a 24h activity snapshot."""
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
     events = (
@@ -82,18 +72,11 @@ async def get_resident(
     request_id: str,
     actor: str = "agent",
 ) -> ResidentResolution:
-    """Resolve a free-form reference (name, surname, room) to a resident.
-
-    Returns:
-        - status="resolved" + resident when there's exactly one match.
-        - status="ambiguous" + candidates when more than one match.
-        - status="not_found" when there are zero matches.
-    """
+    """Resolve a free-form reference to a resident."""
     needle = name_or_id.strip()
     if not needle:
         return ResidentResolution(status="not_found")
 
-    # UUID fast path.
     try:
         rid = UUID(needle)
     except ValueError:
@@ -109,7 +92,6 @@ async def get_resident(
             recent_activity=await _recent_activity(resident.id),
         )
 
-    # Strip German honorifics so "Frau Müller" matches "Müller".
     cleaned = needle
     for prefix in ("frau ", "fr. ", "fr ", "herr ", "hr. ", "hr ", "mrs. ", "mrs ", "mr. ", "mr "):
         if cleaned.lower().startswith(prefix):
@@ -144,12 +126,7 @@ async def get_recent_notes(
     request_id: str,
     actor: str = "agent",
 ) -> RecentNotes:
-    """Recent care events for context.
-
-    Returns events in newest-first order so the planner can scan the tail
-    quickly. Includes drafts as well as finalised entries — the agent often
-    cares about what's in flight.
-    """
+    """Fetch recent care events for context."""
     if days < 1:
         days = 1
     since = datetime.now(timezone.utc) - timedelta(days=days)
@@ -202,10 +179,7 @@ async def search_care_plan(
     )
 
 
-# Conservative clinical bands. Out of scope to be medically authoritative —
-# these are the watch/abnormal lines a competent nurse would already eyeball.
 _VITAL_RULES: dict[str, dict[str, tuple[float, float, float, float]]] = {
-    # field: (critical_low, warn_low, warn_high, critical_high)
     "bp_systolic": (90, 100, 160, 180),
     "bp_diastolic": (60, 65, 100, 110),
     "heart_rate": (50, 55, 100, 120),
@@ -214,10 +188,6 @@ _VITAL_RULES: dict[str, dict[str, tuple[float, float, float, float]]] = {
 }
 
 
-# Hard physiological bounds — anything outside is impossible-in-a-human and
-# must be a transcription / dictation error, NOT a real measurement. The
-# agent's job here is to ask the caregiver, not to "correct" the number to
-# something plausible. Substituting silently is documentation fraud.
 _PLAUSIBLE_BOUNDS: dict[str, tuple[float, float]] = {
     "bp_systolic": (40, 260),
     "bp_diastolic": (20, 180),
@@ -300,8 +270,6 @@ async def check_vital_ranges(
             numeric = float(value)
         except (TypeError, ValueError):
             continue
-        # Check implausibility first — if it's outside human physiology we
-        # short-circuit and force the agent to ask, not draft.
         imp = _implausible(field, numeric)
         if imp:
             implausible_flags.append(imp)
@@ -330,7 +298,7 @@ async def check_vital_ranges(
 
 
 __all__ = [
-    "IndependenceLevel",  # re-exported for downstream convenience
+    "IndependenceLevel",
     "get_resident",
     "get_recent_notes",
     "search_care_plan",

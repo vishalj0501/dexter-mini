@@ -1,10 +1,4 @@
-"""Provider-agnostic LLM layer.
-
-Public surface:
-  - `get_client(role)` → an `LLMClient` for "planner" | "extractor" | "judge"
-  - `Completion`, `ToolCall`, `Usage` — normalized response shapes
-  - `default_breaker` — the in-process circuit breaker (mostly used by tests)
-"""
+"""Provider-agnostic LLM layer."""
 
 from app.llm.client import Completion, LLMClient, LiteLLMClient, Message, ToolCall, Usage
 from app.llm.reliability import CircuitBreaker, default_breaker
