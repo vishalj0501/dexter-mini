@@ -25,17 +25,22 @@ class LLMSettings(BaseSettings):
         extra="ignore",
     )
 
-    # Planner — picks the next tool. Wants reasoning quality; fallback cheaper.
+    # Claude-only by design — the demo is built and tuned on Claude's ReAct
+    # format. The cascade stays in-family: Sonnet → Haiku for heavy roles,
+    # Haiku → Sonnet for the judge.
+
+    # Planner — picks the next tool. Wants reasoning quality; falls back to
+    # Haiku (faster, less prone to Replicate cold-start).
     planner: str = Field(default="replicate/anthropic/claude-4.5-sonnet")
-    planner_fallback: str = Field(default="replicate/openai/gpt-4o-mini")
+    planner_fallback: str = Field(default="replicate/anthropic/claude-4.5-haiku")
 
     # Extractor — fills the SIS Pydantic schemas. Wants the strongest model.
     extractor: str = Field(default="replicate/anthropic/claude-4.5-sonnet")
-    extractor_fallback: str = Field(default="replicate/openai/gpt-4o")
+    extractor_fallback: str = Field(default="replicate/anthropic/claude-4.5-haiku")
 
     # Judge — grounds drafts against the transcript. Cheap + fast > big.
     judge: str = Field(default="replicate/anthropic/claude-4.5-haiku")
-    judge_fallback: str = Field(default="replicate/openai/gpt-4o-mini")
+    judge_fallback: str = Field(default="replicate/anthropic/claude-4.5-sonnet")
 
     # Reliability knobs (apply uniformly across roles)
     request_timeout_s: float = Field(default=20.0)

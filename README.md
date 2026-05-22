@@ -5,6 +5,8 @@ Voice-driven **Care Shift Copilot** for German elderly-care homes. A caregiver s
 - [CLAUDE.md](./CLAUDE.md) — codebase notes
 - [DEMO_RUN.md](./DEMO_RUN.md) — 10 captured agent runs
 
+![dexter-mini caregiver console](./assets/ui.png)
+
 ## Architecture
 
 ```mermaid
