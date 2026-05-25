@@ -67,10 +67,8 @@ Frau Müller, room 12. BP 1650 over 1020. Refused breakfast, looks tired.
 ## Common commands
 
 ```bash
-# tests (in-memory SQLite, sub-second)
-cd apps/gateway && uv run pytest
-
 # eval harness
+cd apps/gateway
 uv run python -m app.evals
 uv run python -m app.evals --case muller-elevated-bp-and-refusal
 
